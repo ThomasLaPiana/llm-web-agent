@@ -14,6 +14,24 @@ use crate::types::{BrowserAction, ScrollDirection, TaskPlan, TaskResult};
 // Global browser singleton
 static BROWSER_SINGLETON: OnceCell<Arc<Browser>> = OnceCell::const_new();
 
+// Helper function to determine if a browser error is fatal and should stop the handler
+fn is_fatal_browser_error(error: &chromiumoxide::error::CdpError) -> bool {
+    use chromiumoxide::error::CdpError;
+
+    match error {
+        // WebSocket connection errors are often recoverable
+        CdpError::Ws(_) => false,
+        // Serialization/deserialization errors are usually recoverable
+        CdpError::Serde(_) => false,
+        // Channel errors might be recoverable
+        CdpError::ChannelSendError(_) => false,
+        // Only treat these as truly fatal
+        CdpError::Chrome(_) => true,
+        CdpError::Io(_) => true,
+        _ => false, // Conservative approach: assume recoverable unless proven otherwise
+    }
+}
+
 // Initialize the global browser instance
 async fn get_or_create_browser() -> Result<Arc<Browser>> {
     BROWSER_SINGLETON
@@ -38,11 +56,24 @@ async fn get_or_create_browser() -> Result<Arc<Browser>> {
             // Spawn task to handle browser events
             tokio::task::spawn(async move {
                 while let Some(h) = handler.next().await {
-                    if h.is_err() {
-                        error!("Browser handler error: {:?}", h);
-                        break;
+                    match h {
+                        Ok(_) => {
+                            // Successfully handled browser event
+                        }
+                        Err(e) => {
+                            // Log the error but continue handling events
+                            // Many errors are recoverable WebSocket communication issues
+                            warn!("Browser handler encountered error (continuing): {:?}", e);
+
+                            // Only break on truly fatal errors
+                            if is_fatal_browser_error(&e) {
+                                error!("Fatal browser error, stopping handler: {:?}", e);
+                                break;
+                            }
+                        }
                     }
                 }
+                info!("Browser handler task ended");
             });
 
             info!("Browser singleton created successfully");
