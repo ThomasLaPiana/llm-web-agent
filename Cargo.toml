@@ -1,0 +1,54 @@
+[package]
+name = "llm-web-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web server framework
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Browser automation
+chromiumoxide = "0.5"
+futures = "0.3"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID generation
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Environment variables
+dotenv = "0.15"
+
+# MCP protocol support (remove this line as it may not exist)
+# mcp = "0.1"
+
+# Base64 encoding
+base64 = "0.21"
+
+[dev-dependencies]
+# Testing framework
+tokio-test = "0.4"
+
+# HTTP client for testing (reuse main dependency)
+reqwest = { version = "0.11", features = ["json"] }
+
+# Test utilities
+serial_test = "3.0"
