@@ -1,55 +1,71 @@
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::time::Duration;
 use tokio::time::sleep;
 
 const SERVER_URL: &str = "http://127.0.0.1:3000";
 static INIT: Once = Once::new();
+static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Helper function to clean up Chrome processes and temp directories
+fn cleanup_chrome() {
+    // Kill any lingering Chrome processes
+    let _ = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("chrome")
+        .output();
+
+    // Clean up the specific chromiumoxide-runner directory that causes conflicts
+    let temp_dir = std::env::temp_dir();
+    let chromium_dir = temp_dir.join("chromiumoxide-runner");
+    if chromium_dir.exists() {
+        let _ = std::fs::remove_dir_all(&chromium_dir);
+    }
+
+    // Wait longer for cleanup to complete and processes to fully terminate
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+}
 
 // Start server once for all tests
 async fn ensure_server_running() {
     INIT.call_once(|| {
-        tokio::spawn(async {
-            // Import the main function from our binary
-            if let Err(e) = llm_web_agent::run_server().await {
-                eprintln!("Server failed to start: {}", e);
-            }
+        // Start the server in a background thread
+        std::thread::spawn(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                match llm_web_agent::run_server().await {
+                    Ok(_) => {
+                        println!("✅ Test server started successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to start test server: {}", e);
+                    }
+                }
+            });
         });
     });
 
-    // Wait for server to be ready
+    // Wait for server to be ready with timeout
     let client = reqwest::Client::new();
-    for _ in 0..60 {
-        // Increased timeout for browser startup
+    for i in 0..60 {
+        // 30 seconds total
         if let Ok(response) = client.get(&format!("{}/health", SERVER_URL)).send().await {
             if response.status().is_success() {
+                SERVER_RUNNING.store(true, Ordering::SeqCst);
+                println!("✅ Test server is ready after {}ms", i * 500);
                 return;
             }
         }
         sleep(Duration::from_millis(500)).await;
     }
 
-    // If we get here, the server didn't start - that's ok, we'll skip integration tests
-    eprintln!("Warning: Server not available for integration tests. Run 'cargo run' in another terminal to enable integration tests.");
-}
-
-// Helper function to check if server is available
-async fn server_available() -> bool {
-    let client = reqwest::Client::new();
-    if let Ok(response) = client.get(&format!("{}/health", SERVER_URL)).send().await {
-        response.status().is_success()
-    } else {
-        false
-    }
+    panic!("❌ Test server failed to start within 30 seconds");
 }
 
 // Helper function to create a browser session
 async fn create_session() -> Result<String, Box<dyn std::error::Error>> {
-    if !server_available().await {
-        return Err("Server not available".into());
-    }
-
     let client = reqwest::Client::new();
     let response = client
         .post(&format!("{}/browser/session", SERVER_URL))
@@ -57,7 +73,9 @@ async fn create_session() -> Result<String, Box<dyn std::error::Error>> {
         .await?;
 
     if response.status() != StatusCode::OK {
-        return Err("Failed to create session".into());
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Failed to create session: HTTP {} - {}", status, error_text).into());
     }
 
     let body: Value = response.json().await?;
@@ -72,11 +90,6 @@ async fn create_session() -> Result<String, Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn test_health_endpoint() {
     ensure_server_running().await;
-
-    if !server_available().await {
-        eprintln!("SKIPPED: test_health_endpoint - server not available");
-        return;
-    }
 
     let client = reqwest::Client::new();
     let response = client
@@ -95,12 +108,7 @@ async fn test_health_endpoint() {
 async fn test_browser_session_creation_api_only() {
     ensure_server_running().await;
 
-    if !server_available().await {
-        eprintln!("SKIPPED: test_browser_session_creation_api_only - server not available");
-        return;
-    }
-
-    // Test just the API contract, not actual browser launching
+    // Test the API contract - this test validates the API response format
     let client = reqwest::Client::new();
     let response = client
         .post(&format!("{}/browser/session", SERVER_URL))
@@ -108,31 +116,31 @@ async fn test_browser_session_creation_api_only() {
         .await
         .expect("Session creation request should succeed");
 
-    // The API might fail due to browser issues, which is OK for this test
+    // The API should either succeed or return a proper error response
     if response.status() == StatusCode::OK {
         let body: Value = response.json().await.expect("Response should be JSON");
         let session_id = body["session_id"].as_str().expect("Should have session_id");
         assert!(!session_id.is_empty(), "Session ID should not be empty");
         println!("✅ Browser session API test passed");
     } else {
-        // Expected if Chrome isn't available or other browser issues
-        println!(
-            "⚠️  Browser session creation failed (likely no Chrome available): {}",
+        // If browser creation fails, we should get a proper error response
+        assert!(
+            response.status().is_client_error() || response.status().is_server_error(),
+            "Should get proper error status, got: {}",
             response.status()
         );
-        let error_body: Value = response.json().await.unwrap_or_default();
-        println!("   Error: {:?}", error_body);
+        let error_body: Value = response
+            .json()
+            .await
+            .expect("Error response should be JSON");
+        assert!(error_body["error"].is_string(), "Should have error message");
+        println!("✅ Browser session API error handling test passed");
     }
 }
 
 #[tokio::test]
 async fn test_navigation_api_contract() {
     ensure_server_running().await;
-
-    if !server_available().await {
-        eprintln!("SKIPPED: test_navigation_api_contract - server not available");
-        return;
-    }
 
     // Test navigation API without requiring actual browser
     let client = reqwest::Client::new();
@@ -156,15 +164,12 @@ async fn test_navigation_api_contract() {
 
 #[tokio::test]
 async fn test_wait_action() {
+    cleanup_chrome();
     ensure_server_running().await;
 
-    let session_id = match create_session().await {
-        Ok(id) => id,
-        Err(_) => {
-            eprintln!("SKIPPED: test_wait_action - cannot create browser session");
-            return;
-        }
-    };
+    let session_id = create_session()
+        .await
+        .expect("Browser session creation must succeed for this test");
 
     let client = reqwest::Client::new();
     let start = std::time::Instant::now();
@@ -205,15 +210,12 @@ async fn test_wait_action() {
 
 #[tokio::test]
 async fn test_automation_task_fallback() {
+    cleanup_chrome();
     ensure_server_running().await;
 
-    let session_id = match create_session().await {
-        Ok(id) => id,
-        Err(_) => {
-            eprintln!("SKIPPED: test_automation_task_fallback - cannot create browser session");
-            return;
-        }
-    };
+    let session_id = create_session()
+        .await
+        .expect("Browser session creation must succeed for this test");
 
     let client = reqwest::Client::new();
     let response = client
@@ -242,25 +244,17 @@ async fn test_automation_task_fallback() {
     );
 }
 
-// Tests that require actual browser navigation (marked as ignored by default)
+// Tests that require actual browser navigation
 #[tokio::test]
-#[ignore] // Requires Chrome and network access
 async fn test_real_browser_navigation() {
+    cleanup_chrome();
     ensure_server_running().await;
 
-    let session_id = match create_session().await {
-        Ok(id) => id,
-        Err(e) => {
-            println!(
-                "⚠️  Browser session creation failed (expected on some systems): {}",
-                e
-            );
-            println!("This test requires a properly configured Chrome installation");
-            return; // Skip the test instead of panicking
-        }
-    };
+    let session_id = create_session()
+        .await
+        .expect("Browser session creation must succeed for this test");
 
-    // Use a more reliable test endpoint
+    // Use a reliable test endpoint
     let test_url = "https://httpbin.org/get";
 
     let client = reqwest::Client::new();
@@ -275,17 +269,14 @@ async fn test_real_browser_navigation() {
         .expect("Navigation request should succeed");
 
     if response.status() != StatusCode::OK {
-        let error: Value = response.json().await.unwrap_or_default();
-        println!(
-            "⚠️  Navigation test failed (this may be expected): {:?}",
-            error
-        );
-        return; // Skip instead of panicking
+        let status = response.status();
+        let error_body: Value = response.json().await.unwrap_or_default();
+        panic!("Navigation failed with status {}: {:?}", status, error_body);
     }
 
     let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true);
-    assert_eq!(body["current_url"], test_url);
+    assert_eq!(body["success"], true, "Navigation must be successful");
+    assert_eq!(body["current_url"], test_url, "URL must match");
 
     // Wait for page to load
     sleep(Duration::from_millis(2000)).await;
@@ -303,46 +294,42 @@ async fn test_real_browser_navigation() {
         .await
         .expect("Page source request should succeed");
 
-    if source_response.status() == StatusCode::OK {
-        let source_body: Value = source_response
-            .json()
-            .await
-            .expect("Response should be JSON");
-        if source_body["success"] == true {
-            let page_source = source_body["result"]
-                .as_str()
-                .expect("Should have page source");
+    assert_eq!(
+        source_response.status(),
+        StatusCode::OK,
+        "Page source request must succeed"
+    );
+    let source_body: Value = source_response
+        .json()
+        .await
+        .expect("Response should be JSON");
+    assert_eq!(
+        source_body["success"], true,
+        "Page source extraction must succeed"
+    );
 
-            // httpbin.org/get returns JSON with request info
-            if page_source.contains("httpbin.org") || page_source.contains("headers") {
-                println!("✅ Real browser navigation test passed");
-            } else {
-                println!("⚠️  Navigation succeeded but page content unexpected");
-            }
-        } else {
-            println!("⚠️  Page source extraction failed");
-        }
-    } else {
-        println!("⚠️  Page source request failed");
-    }
+    let page_source = source_body["result"]
+        .as_str()
+        .expect("Should have page source");
+
+    // httpbin.org/get returns JSON with request info
+    assert!(
+        page_source.contains("httpbin.org") || page_source.contains("headers"),
+        "Page should contain httpbin content, got: {}",
+        &page_source[..std::cmp::min(200, page_source.len())]
+    );
+
+    println!("✅ Real browser navigation test passed");
 }
 
 #[tokio::test]
-#[ignore] // Requires Chrome and network access
 async fn test_browser_screenshot() {
+    cleanup_chrome();
     ensure_server_running().await;
 
-    let session_id = match create_session().await {
-        Ok(id) => id,
-        Err(e) => {
-            println!(
-                "⚠️  Browser session creation failed (expected on some systems): {}",
-                e
-            );
-            println!("This test requires a properly configured Chrome installation");
-            return; // Skip the test instead of panicking
-        }
-    };
+    let session_id = create_session()
+        .await
+        .expect("Browser session creation must succeed for this test");
 
     // Navigate to a simple page first
     let client = reqwest::Client::new();
@@ -356,10 +343,11 @@ async fn test_browser_screenshot() {
         .await
         .expect("Navigation should succeed");
 
-    if nav_response.status() != StatusCode::OK {
-        println!("⚠️  Navigation failed, skipping screenshot test");
-        return;
-    }
+    assert_eq!(
+        nav_response.status(),
+        StatusCode::OK,
+        "Navigation must succeed"
+    );
 
     // Wait for page to load
     sleep(Duration::from_millis(3000)).await;
@@ -377,46 +365,34 @@ async fn test_browser_screenshot() {
         .await
         .expect("Screenshot request should succeed");
 
-    if response.status() != StatusCode::OK {
-        println!(
-            "⚠️  Screenshot request failed with status: {}",
-            response.status()
-        );
-        let error_body: Value = response.json().await.unwrap_or_default();
-        println!("   Error: {:?}", error_body);
-        return;
-    }
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Screenshot request must succeed"
+    );
 
     let body: Value = response.json().await.expect("Response should be JSON");
-    if body["success"] == true {
-        let result = body["result"].as_str().expect("Result should be a string");
-        assert!(
-            result.starts_with("data:image/png;base64,"),
-            "Should return base64 encoded image"
-        );
-        assert!(
-            result.len() > 1000,
-            "Screenshot should contain substantial data"
-        );
+    assert_eq!(body["success"], true, "Screenshot must be successful");
 
-        println!(
-            "✅ Browser screenshot test passed ({}KB)",
-            result.len() / 1024
-        );
-    } else {
-        println!("⚠️  Screenshot failed: {:?}", body);
-    }
+    let result = body["result"].as_str().expect("Result should be a string");
+    assert!(
+        result.starts_with("data:image/png;base64,"),
+        "Should return base64 encoded image"
+    );
+    assert!(
+        result.len() > 1000,
+        "Screenshot should contain substantial data"
+    );
+
+    println!(
+        "✅ Browser screenshot test passed ({}KB)",
+        result.len() / 1024
+    );
 }
 
-// Test specifically for session error handling
 #[tokio::test]
 async fn test_invalid_session_error() {
     ensure_server_running().await;
-
-    if !server_available().await {
-        eprintln!("SKIPPED: test_invalid_session_error - server not available");
-        return;
-    }
 
     let client = reqwest::Client::new();
     let response = client

@@ -1,85 +1,126 @@
-use chromiumoxide::{Browser, BrowserConfig, Page};
+use anyhow::{anyhow, Result};
+use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::page::Page;
 use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::types::{BrowserAction, ScrollDirection, TaskPlan, TaskResult};
 
+// Global browser singleton
+static BROWSER_SINGLETON: OnceCell<Arc<Browser>> = OnceCell::const_new();
+
+// Initialize the global browser instance
+async fn get_or_create_browser() -> Result<Arc<Browser>> {
+    BROWSER_SINGLETON
+        .get_or_try_init(|| async {
+            info!("Creating browser singleton instance");
+
+            let (browser, mut handler) = Browser::launch(
+                BrowserConfig::builder()
+                    .args(vec![
+                        "--headless",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--remote-debugging-port=0",
+                    ])
+                    .build()
+                    .map_err(|e| anyhow!("Failed to build browser config: {}", e))?,
+            )
+            .await
+            .map_err(|e| anyhow!("Failed to launch browser: {}", e))?;
+
+            // Spawn task to handle browser events
+            tokio::task::spawn(async move {
+                while let Some(h) = handler.next().await {
+                    if h.is_err() {
+                        error!("Browser handler error: {:?}", h);
+                        break;
+                    }
+                }
+            });
+
+            info!("Browser singleton created successfully");
+            Ok(Arc::new(browser))
+        })
+        .await
+        .map(|browser| browser.clone())
+}
+
+#[allow(dead_code)]
 pub struct BrowserSession {
-    #[allow(dead_code)]
-    browser: Browser,
+    browser: Arc<Browser>,
     page: Page,
+    session_id: String,
 }
 
 impl BrowserSession {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> Result<Self> {
         info!("Creating new browser session");
 
-        let (browser, mut handler) = Browser::launch(
-            BrowserConfig::builder()
-                .args(vec![
-                    "--headless",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--remote-debugging-port=0",
-                ])
-                .build()
-                .map_err(|e| anyhow::anyhow!("Failed to build browser config: {}", e))?,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to launch browser: {}", e))?;
+        // Get the shared browser instance
+        let browser = get_or_create_browser().await?;
 
-        // Spawn task to handle browser events
-        tokio::task::spawn(async move {
-            while let Some(h) = handler.next().await {
-                if h.is_err() {
-                    error!("Browser handler error: {:?}", h);
-                    break;
-                }
+        // Create a new page in the existing browser with retry logic
+        let page = match browser.new_page("about:blank").await {
+            Ok(page) => {
+                info!("Successfully created new page in browser");
+                page
             }
-        });
+            Err(e) => {
+                warn!("First attempt to create page failed: {}, retrying...", e);
 
-        info!("Browser launched successfully, creating new page...");
+                // Wait a moment and retry
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-        let page = browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create new page: {}", e))?;
+                browser
+                    .new_page("about:blank")
+                    .await
+                    .map_err(|e| anyhow!("Failed to create new page after retry: {}", e))?
+            }
+        };
 
-        info!("Browser session created successfully");
-        Ok(Self { browser, page })
+        let session_id = Uuid::new_v4().to_string();
+        info!(
+            "Browser session created successfully with ID: {}",
+            session_id
+        );
+
+        Ok(Self {
+            browser,
+            page,
+            session_id,
+        })
     }
 
-    pub async fn navigate(&mut self, url: &str) -> anyhow::Result<()> {
+    pub async fn navigate(&mut self, url: &str) -> Result<()> {
         info!("Navigating to: {}", url);
 
-        // Set a longer timeout for navigation
+        // Simple navigation without waiting for navigation events
+        // This avoids WebSocket communication issues with wait_for_navigation
         let navigation_result = tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
             self.page
                 .goto(url)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to navigate to {}: {}", url, e))?;
+                .map_err(|e| anyhow!("Failed to navigate to {}: {}", url, e))?;
 
-            // Wait for page load with timeout
-            tokio::time::timeout(
-                tokio::time::Duration::from_secs(10),
-                self.page.wait_for_navigation(),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("Navigation timeout after 10 seconds"))?
-            .map_err(|e| anyhow::anyhow!("Failed to wait for navigation: {}", e))?;
+            // Give the page a moment to start loading, but don't wait for navigation events
+            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
             Ok(())
         })
         .await
-        .map_err(|_| anyhow::anyhow!("Navigation timeout after 30 seconds"))?;
+        .map_err(|_| anyhow!("Navigation timeout after 30 seconds"))?;
 
         navigation_result
     }
 
-    pub async fn interact(&mut self, action: &BrowserAction) -> anyhow::Result<String> {
+    pub async fn interact(&mut self, action: &BrowserAction) -> Result<String> {
         match action {
             BrowserAction::Click { selector } => {
                 info!("Clicking element: {}", selector);
@@ -87,12 +128,12 @@ impl BrowserSession {
                     .page
                     .find_element(selector)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Element not found {}: {}", selector, e))?;
+                    .map_err(|e| anyhow!("Element not found {}: {}", selector, e))?;
 
                 element
                     .click()
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to click element: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to click element: {}", e))?;
 
                 Ok("Click successful".to_string())
             }
@@ -103,17 +144,17 @@ impl BrowserSession {
                     .page
                     .find_element(selector)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Element not found {}: {}", selector, e))?;
+                    .map_err(|e| anyhow!("Element not found {}: {}", selector, e))?;
 
                 element
                     .click()
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to focus element: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to focus element: {}", e))?;
 
                 element
                     .type_str(text)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to type text: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to type text: {}", e))?;
 
                 Ok("Text input successful".to_string())
             }
@@ -138,7 +179,7 @@ impl BrowserSession {
                         break;
                     }
                     if start.elapsed().as_millis() > timeout as u128 {
-                        return Err(anyhow::anyhow!("Element not found within {}ms", timeout));
+                        return Err(anyhow!("Element not found within {}ms", timeout));
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
@@ -160,7 +201,7 @@ impl BrowserSession {
                 self.page
                     .evaluate(scroll_script.as_str())
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to scroll: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to scroll: {}", e))?;
 
                 Ok(format!("Scrolled by ({x}, {y})"))
             }
@@ -171,7 +212,7 @@ impl BrowserSession {
                     .page
                     .screenshot(chromiumoxide::page::ScreenshotParams::builder().build())
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to take screenshot: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to take screenshot: {}", e))?;
 
                 // Convert to base64 for response
                 use base64::Engine;
@@ -185,7 +226,7 @@ impl BrowserSession {
                     .page
                     .content()
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get page source: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to get page source: {}", e))?;
 
                 Ok(source)
             }
@@ -196,14 +237,14 @@ impl BrowserSession {
                     .page
                     .evaluate(script.as_str())
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to execute script: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to execute script: {}", e))?;
 
                 Ok(format!("{:?}", result.value()))
             }
         }
     }
 
-    pub async fn extract_data(&self, selector: &str) -> anyhow::Result<HashMap<String, Value>> {
+    pub async fn extract_data(&self, selector: &str) -> Result<HashMap<String, Value>> {
         info!("Extracting data using selector: {}", selector);
 
         let script = format!(
@@ -227,7 +268,7 @@ impl BrowserSession {
             .page
             .evaluate(script.as_str())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to extract data: {}", e))?;
+            .map_err(|e| anyhow!("Failed to extract data: {}", e))?;
 
         let mut data = HashMap::new();
         if let Some(value) = result.value() {
@@ -238,7 +279,7 @@ impl BrowserSession {
         Ok(data)
     }
 
-    pub async fn execute_task_plan(&mut self, plan: &TaskPlan) -> anyhow::Result<Vec<TaskResult>> {
+    pub async fn execute_task_plan(&mut self, plan: &TaskPlan) -> Result<Vec<TaskResult>> {
         info!("Executing task plan: {}", plan.description);
         let mut results = Vec::new();
 
@@ -277,12 +318,12 @@ impl BrowserSession {
         Ok(results)
     }
 
-    pub async fn get_current_url(&self) -> anyhow::Result<String> {
+    pub async fn get_current_url(&self) -> Result<String> {
         let url = self
             .page
             .url()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get current URL: {}", e))?;
+            .map_err(|e| anyhow!("Failed to get current URL: {}", e))?;
 
         Ok(url.unwrap_or_else(|| "about:blank".to_string()))
     }

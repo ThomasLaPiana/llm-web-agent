@@ -36,16 +36,10 @@ test-integration: ## Run integration tests (API endpoints, requires server or sk
 	@echo "Note: If server is not running, tests will skip gracefully"
 	cargo test --test integration_tests
 
-test-browser: ## Run browser automation tests (requires Chrome/Chromium)
-	@echo "Running browser integration tests..."
-	@echo "Note: These tests require Chrome/Chromium to be installed"
-	cargo test --test integration_tests -- --ignored
-
 test: ## Run all tests including browser tests
 	@echo "Running all tests (unit + integration + browser)..."
 	make test-unit
 	make test-integration
-	make test-browser
 
 # Development Commands
 lint: ## Run clippy linter

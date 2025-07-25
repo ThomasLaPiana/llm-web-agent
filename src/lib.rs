@@ -16,7 +16,6 @@ pub mod types;
 
 pub use types::*;
 
-
 #[derive(Clone)]
 pub struct AppState {
     browser_sessions: Arc<RwLock<HashMap<String, browser::BrowserSession>>>,
