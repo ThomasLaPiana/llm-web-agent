@@ -18,15 +18,12 @@ impl BrowserSession {
 
         let (browser, mut handler) = Browser::launch(
             BrowserConfig::builder()
-                .with_head()
                 .args(vec![
+                    "--headless",
                     "--no-sandbox",
-                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-accelerated-2d-canvas",
-                    "--no-first-run",
-                    "--no-zygote",
                     "--disable-gpu",
+                    "--remote-debugging-port=0",
                 ])
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to build browser config: {}", e))?,
@@ -44,29 +41,42 @@ impl BrowserSession {
             }
         });
 
+        info!("Browser launched successfully, creating new page...");
+
         let page = browser
             .new_page("about:blank")
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create new page: {}", e))?;
 
+        info!("Browser session created successfully");
         Ok(Self { browser, page })
     }
 
     pub async fn navigate(&mut self, url: &str) -> anyhow::Result<()> {
         info!("Navigating to: {}", url);
 
-        self.page
-            .goto(url)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to navigate to {}: {}", url, e))?;
+        // Set a longer timeout for navigation
+        let navigation_result = tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
+            self.page
+                .goto(url)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to navigate to {}: {}", url, e))?;
 
-        // Wait for page load
-        self.page
-            .wait_for_navigation()
+            // Wait for page load with timeout
+            tokio::time::timeout(
+                tokio::time::Duration::from_secs(10),
+                self.page.wait_for_navigation(),
+            )
             .await
+            .map_err(|_| anyhow::anyhow!("Navigation timeout after 10 seconds"))?
             .map_err(|e| anyhow::anyhow!("Failed to wait for navigation: {}", e))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Navigation timeout after 30 seconds"))?;
+
+        navigation_result
     }
 
     pub async fn interact(&mut self, action: &BrowserAction) -> anyhow::Result<String> {
