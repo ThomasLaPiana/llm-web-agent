@@ -17,20 +17,34 @@ A powerful web automation service that combines browser automation with AI-power
 
 - Rust 1.70+
 - Chrome/Chromium browser (for full functionality)
-- Mistral API key (optional, fallback mode available)
+- Docker & Docker Compose (for local Mistral service)
+- Mistral API key (for cloud mode, optional with local mode)
 
 ## Architecture
 
 ```txt
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   REST API      │    │   Browser       │    │   Mistral LLM   │
-│   (Axum)        │◄──►│  (chromiumoxide)│    │   (MCP)         │
+│   (Axum)        │◄──►│  (chromiumoxide)│    │   (Local/Cloud) │
 │                 │    │                 │    │                 │
 │ • Session Mgmt  │    │ • Page Control  │    │ • Task Planning │
 │ • Task Planning │    │ • Element Inter │    │ • Action Break  │
 │ • Data Extract  │    │ • Screenshot    │    │ • Fallback Plan │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
+                                               │                 │
+                                               ▼                 ▼
+                                          ┌─────────┐   ┌─────────────┐
+                                          │ Ollama  │   │ Mistral API │
+                                          │ (Local) │   │  (Cloud)    │
+                                          └─────────┘   └─────────────┘
 ```
+
+### Local vs Cloud Mode
+
+The service supports two modes for Mistral integration:
+
+- **Local Mode**: Uses dockerized Ollama with local Mistral models
+- **Cloud Mode**: Uses Mistral's cloud API (original behavior)
 
 ## API Endpoints
 
@@ -72,7 +86,64 @@ The service supports various browser actions:
 
 ### Environment Variables
 
-- `MISTRAL_API_KEY`: Your Mistral AI API key
-- `MISTRAL_API_ENDPOINT`: Mistral API endpoint (default: https://api.mistral.ai/v1/chat/completions)
+#### General Configuration
+
 - `RUST_LOG`: Logging level (debug, info, warn, error)
 - `PORT`: Server port (default: 3000)
+
+#### Mistral Configuration
+
+- `MISTRAL_MODE`: Set to "local" for Ollama or "cloud" for API (default: cloud)
+
+#### Local Mode (Ollama)
+
+- `MISTRAL_LOCAL_ENDPOINT`: Ollama endpoint (default: http://localhost:11434)
+
+#### Cloud Mode (Mistral API)
+
+- `MISTRAL_API_KEY`: Your Mistral AI API key
+- `MISTRAL_API_ENDPOINT`: Mistral API endpoint (default: https://api.mistral.ai/v1/chat/completions)
+
+### Quick Setup Commands
+
+#### Local Development with Dockerized Mistral
+
+```bash
+# Setup environment
+make local-setup
+# Edit .env file as needed
+# Start all services
+make docker-up
+# Initialize models (first time only)
+make init-models
+```
+
+#### Cloud Development with Mistral API
+
+```bash
+# Setup environment
+make cloud-setup
+# Edit .env file and add your API key
+# Run the application
+cargo run
+```
+
+### Docker Commands
+
+```bash
+# Build and start all services
+make docker-up
+
+# View logs
+make docker-logs
+
+# Stop services
+make docker-down
+
+# Check service status
+make status
+
+# Health checks
+make health-local  # Check Ollama
+make health-app    # Check application
+```

@@ -1,85 +1,67 @@
-# LLM Web Agent Makefile
-# Provides convenient commands for building, testing, and running the web automation service
+# Makefile for LLM Web Agent
 
-.PHONY: help build run clean test test-unit test-integration test-browser test-all check fmt lint install dev
+.PHONY: help build test clean docker-build docker-up docker-down docker-logs dev
 
-# Default target
 help: ## Show this help message
-	@echo "LLM Web Agent - Available Commands:"
-	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
-	@echo ""
+	@echo "Available commands:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-# Build Commands
-build: ## Build the project in debug mode
-	cargo build
-
-build-release: ## Build the project in release mode
+build: ## Build the Rust application
 	cargo build --release
 
-# Run Commands
-run: ## Start the web automation server
-	@echo "Starting LLM Web Agent server on http://localhost:3000"
-	cargo run
+test: ## Run tests
+	cargo test
 
-dev: ## Run server with debug logging
-	@echo "Starting LLM Web Agent server with debug logging"
+clean: ## Clean build artifacts
+	cargo clean
+
+dev: ## Run the application in development mode
 	RUST_LOG=debug cargo run
 
-# Test Commands
-test-unit: ## Run fast unit tests (type safety, serialization)
-	@echo "Running unit tests..."
-	cargo test --test unit_tests
+docker-build: ## Build Docker images
+	docker-compose build
 
-test-integration: ## Run integration tests (API endpoints, requires server or skips)
-	@echo "Running integration tests..."
-	@echo "Note: If server is not running, tests will skip gracefully"
-	cargo test --test integration_tests
+docker-up: ## Start all services with Docker Compose
+	docker-compose up -d
 
-test: ## Run all tests including browser tests
-	@echo "Running all tests (unit + integration + browser)..."
-	make test-unit
-	make test-integration
+docker-down: ## Stop all Docker services
+	docker-compose down
 
-# Development Commands
-lint: ## Run clippy linter
-	cargo clippy -- -D warnings
+docker-logs: ## View logs from all services
+	docker-compose logs -f
 
-fix: ## Auto-fix linting issues where possible
-	cargo clippy --fix --allow-dirty --allow-staged
+docker-restart: ## Restart all Docker services
+	docker-compose restart
 
-# Documentation Commands
-docs: ## Generate and open documentation
-	cargo doc --open
+docker-clean: ## Clean up Docker images and volumes
+	docker-compose down -v
+	docker system prune -f
 
-# Server Management
-start-bg: ## Start server in background for testing
-	@echo "Starting server in background..."
-	@cargo run > /dev/null 2>&1 &
-	@echo "Server started. Use 'make stop' to stop it."
+local-setup: ## Setup for local development with Ollama
+	@echo "Setting up local Mistral service..."
+	@cp env.example .env
+	@echo "Please edit .env file to configure your environment"
+	@echo "Then run: make docker-up"
 
-stop: ## Stop background server
-	@echo "Stopping server..."
-	@pkill -f llm-web-agent || echo "No server process found"
+cloud-setup: ## Setup for cloud Mistral API
+	@echo "Setting up cloud Mistral API..."
+	@cp env.example .env
+	@echo "Set MISTRAL_MODE=cloud in .env"
+	@echo "Add your MISTRAL_API_KEY to .env"
+	@echo "Then run: cargo run"
 
-# Environment Setup
-setup: ## Setup development environment
-	@echo "Setting up development environment..."
-	@if [ ! -f .env ]; then cp .env.example .env && echo "Created .env from .env.example"; fi
-	@cargo build
-	@echo "Setup complete! Run 'make run' to start the server."
+init-models: ## Initialize Mistral models in local Ollama (run after docker-up)
+	@echo "Initializing Mistral models..."
+	docker exec mistral-local ollama pull mistral:latest
+	docker exec mistral-local ollama pull mistral:7b
+	@echo "Models initialized successfully!"
 
-# Watch Commands (requires cargo-watch: cargo install cargo-watch)
-watch: ## Watch for changes and run tests automatically
-	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cargo watch -x "test --test unit_tests"; \
-	else \
-		echo "cargo-watch not installed. Run: cargo install cargo-watch"; \
-	fi
+status: ## Check service status
+	docker-compose ps
 
-watch-integration: ## Watch for changes and run integration tests
-	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cargo watch -x "test --test integration_tests"; \
-	else \
-		echo "cargo-watch not installed. Run: cargo install cargo-watch"; \
-	fi 
+# Health checks
+health-local: ## Check local Ollama health
+	curl -f http://localhost:11434/api/tags || echo "Ollama service not responding"
+
+health-app: ## Check application health
+	curl -f http://localhost:3000/health || echo "Application not responding" 

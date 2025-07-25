@@ -6,9 +6,17 @@ use tracing::{info, warn};
 
 use crate::types::{AutomationRequest, BrowserAction, TaskPlan, TaskStep};
 
+#[derive(Debug, Clone)]
+pub enum MistralMode {
+    Local,
+    Cloud,
+}
+
 pub struct MCPClient {
     client: Client,
+    mode: MistralMode,
     api_endpoint: String,
+    local_endpoint: Option<String>,
     api_key: Option<String>,
 }
 
@@ -19,6 +27,26 @@ struct MistralRequest {
     temperature: f32,
     max_tokens: Option<usize>,
     tools: Option<Vec<Tool>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaRequest {
+    model: String,
+    messages: Vec<Message>,
+    stream: bool,
+    options: Option<OllamaOptions>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaOptions {
+    temperature: f32,
+    num_predict: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaResponse {
+    message: ResponseMessage,
+    done: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,18 +98,37 @@ struct ToolCallFunction {
 
 impl MCPClient {
     pub async fn new() -> anyhow::Result<Self> {
+        let mode = match env::var("MISTRAL_MODE").as_deref() {
+            Ok("local") => MistralMode::Local,
+            _ => MistralMode::Cloud,
+        };
+
         let api_endpoint = env::var("MISTRAL_API_ENDPOINT")
             .unwrap_or_else(|_| "https://api.mistral.ai/v1/chat/completions".to_string());
 
+        let local_endpoint = env::var("MISTRAL_LOCAL_ENDPOINT").ok();
         let api_key = env::var("MISTRAL_API_KEY").ok();
 
-        if api_key.is_none() {
-            warn!("MISTRAL_API_KEY not set. LLM features will be limited.");
+        match mode {
+            MistralMode::Local => {
+                if local_endpoint.is_none() {
+                    warn!("MISTRAL_LOCAL_ENDPOINT not set for local mode. Using default: http://localhost:11434");
+                }
+                info!("Using local Mistral service via Ollama");
+            }
+            MistralMode::Cloud => {
+                if api_key.is_none() {
+                    warn!("MISTRAL_API_KEY not set. LLM features will be limited.");
+                }
+                info!("Using cloud Mistral API");
+            }
         }
 
         Ok(Self {
             client: Client::new(),
+            mode,
             api_endpoint,
+            local_endpoint,
             api_key,
         })
     }
@@ -95,6 +142,89 @@ impl MCPClient {
             request.task_description
         );
 
+        match self.mode {
+            MistralMode::Local => self.process_with_local_ollama(request).await,
+            MistralMode::Cloud => self.process_with_cloud_api(request).await,
+        }
+    }
+
+    async fn process_with_local_ollama(
+        &self,
+        request: &AutomationRequest,
+    ) -> anyhow::Result<TaskPlan> {
+        let default_endpoint = "http://localhost:11434".to_string();
+        let endpoint = self.local_endpoint.as_ref().unwrap_or(&default_endpoint);
+
+        let chat_endpoint = format!("{}/api/chat", endpoint);
+
+        let system_prompt = self.get_system_prompt();
+        let user_prompt = self.format_user_prompt_for_ollama(request);
+
+        let ollama_request = OllamaRequest {
+            model: "mistral:latest".to_string(),
+            messages: vec![
+                Message {
+                    role: "system".to_string(),
+                    content: system_prompt,
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: user_prompt,
+                },
+            ],
+            stream: false,
+            options: Some(OllamaOptions {
+                temperature: 0.1,
+                num_predict: Some(2000),
+            }),
+        };
+
+        let response = self
+            .client
+            .post(&chat_endpoint)
+            .json(&ollama_request)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send request to local Ollama: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            warn!(
+                "Local Ollama error {}: {}, falling back to simple plan",
+                status, error_text
+            );
+            return Ok(self.create_fallback_plan(request));
+        }
+
+        let ollama_response: OllamaResponse = response
+            .json()
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Failed to parse Ollama response: {}, falling back to simple plan",
+                    e
+                );
+                e
+            })
+            .unwrap_or_else(|_| {
+                // If parsing fails, create a mock response to trigger fallback
+                OllamaResponse {
+                    message: ResponseMessage {
+                        content: None,
+                        tool_calls: None,
+                    },
+                    done: true,
+                }
+            });
+
+        self.parse_ollama_task_plan(&ollama_response, request)
+    }
+
+    async fn process_with_cloud_api(
+        &self,
+        request: &AutomationRequest,
+    ) -> anyhow::Result<TaskPlan> {
         // If no API key is available, return a simple fallback plan
         if self.api_key.is_none() {
             return Ok(self.create_fallback_plan(request));
@@ -187,6 +317,35 @@ Return your plan as a JSON object.".to_string()
         prompt
     }
 
+    fn format_user_prompt_for_ollama(&self, request: &AutomationRequest) -> String {
+        let mut prompt = format!("Task: {}", request.task_description);
+
+        if let Some(url) = &request.target_url {
+            prompt.push_str(&format!("\nTarget URL: {url}"));
+        }
+
+        if let Some(context) = &request.context {
+            prompt.push_str(&format!("\nAdditional context: {context:?}"));
+        }
+
+        prompt.push_str("\n\nPlease create a detailed task plan for this automation request. ");
+        prompt.push_str("Return your response as a JSON object with the following structure:\n");
+        prompt.push_str("{\n");
+        prompt.push_str("  \"description\": \"Overall task description\",\n");
+        prompt.push_str("  \"steps\": [\n");
+        prompt.push_str("    {\n");
+        prompt.push_str("      \"id\": \"unique_step_id\",\n");
+        prompt.push_str("      \"action\": {\"Click\": {\"selector\": \"css_selector\"}},\n");
+        prompt.push_str("      \"description\": \"What this step does\",\n");
+        prompt.push_str("      \"expected_outcome\": \"What should happen\"\n");
+        prompt.push_str("    }\n");
+        prompt.push_str("  ]\n");
+        prompt.push_str("}\n\n");
+        prompt.push_str("Available actions: Click, Type, Wait, WaitForElement, Scroll, Screenshot, GetPageSource, ExecuteScript");
+
+        prompt
+    }
+
     fn get_browser_tools(&self) -> Vec<Tool> {
         vec![Tool {
             tool_type: "function".to_string(),
@@ -251,6 +410,31 @@ Return your plan as a JSON object.".to_string()
         }
 
         // If parsing fails, return a fallback plan
+        Ok(self.create_fallback_plan(request))
+    }
+
+    fn parse_ollama_task_plan(
+        &self,
+        response: &OllamaResponse,
+        request: &AutomationRequest,
+    ) -> anyhow::Result<TaskPlan> {
+        if let Some(content) = &response.message.content {
+            // Try to extract JSON from the content
+            if let Some(start) = content.find('{') {
+                if let Some(end) = content.rfind('}') {
+                    let json_str = &content[start..=end];
+                    if let Ok(plan) = serde_json::from_str::<TaskPlan>(json_str) {
+                        info!("Successfully parsed task plan from Ollama response");
+                        return Ok(plan);
+                    } else {
+                        warn!("Failed to parse JSON from Ollama response: {}", json_str);
+                    }
+                }
+            }
+        }
+
+        // If parsing fails, return a fallback plan
+        warn!("Could not parse task plan from Ollama, using fallback");
         Ok(self.create_fallback_plan(request))
     }
 

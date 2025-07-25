@@ -50,6 +50,7 @@ tokio-test = "0.4"
 # HTTP client for testing (reuse main dependency)
 reqwest = { version = "0.11", features = ["json"] }
 
-[[test]]
-name = "integration_tests"
-harness = true
+# Test configuration - uncomment when test files are created
+# [[test]]
+# name = "integration_tests"
+# harness = true
