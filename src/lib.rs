@@ -1,9 +1,10 @@
 use axum::{
     extract::State,
     response::Json,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
+use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -48,6 +49,11 @@ pub async fn run_server() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .route("/browser/session", post(create_browser_session))
         .route("/browser/session/:session_id", get(get_browser_session))
+        .route(
+            "/browser/session/:session_id",
+            delete(cleanup_browser_session),
+        )
+        .route("/browser/sessions/cleanup", post(cleanup_all_sessions))
         .route("/browser/navigate", post(navigate_to_url))
         .route("/browser/interact", post(interact_with_page))
         .route("/browser/extract", post(extract_page_data))
@@ -65,8 +71,72 @@ pub async fn run_server() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn health_check() -> &'static str {
-    "LLM Web Agent is running!"
+async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let sessions = state.browser_sessions.read().await;
+    let session_count = sessions.len();
+
+    // Get memory usage if available
+    let memory_info = get_memory_info();
+
+    Json(json!({
+        "status": "healthy",
+        "message": "LLM Web Agent is running!",
+        "active_sessions": session_count,
+        "memory_usage_mb": memory_info,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}
+
+fn get_memory_info() -> Option<u64> {
+    // Try to get memory usage on Unix systems
+    #[cfg(unix)]
+    {
+        use std::fs;
+        if let Ok(contents) = fs::read_to_string("/proc/self/status") {
+            for line in contents.lines() {
+                if line.starts_with("VmRSS:") {
+                    if let Some(kb_str) = line.split_whitespace().nth(1) {
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return Some(kb / 1024); // Convert KB to MB
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// New cleanup endpoints
+async fn cleanup_browser_session(
+    State(state): State<AppState>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut sessions = state.browser_sessions.write().await;
+
+    if sessions.remove(&session_id).is_some() {
+        info!("Cleaned up browser session: {}", session_id);
+        Ok(Json(json!({
+            "success": true,
+            "message": format!("Session {} cleaned up successfully", session_id),
+            "remaining_sessions": sessions.len()
+        })))
+    } else {
+        Err(AppError::SessionNotFound(session_id))
+    }
+}
+
+async fn cleanup_all_sessions(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut sessions = state.browser_sessions.write().await;
+    let cleaned_count = sessions.len();
+    sessions.clear();
+
+    info!("Cleaned up all {} browser sessions", cleaned_count);
+    Json(json!({
+        "success": true,
+        "message": format!("Cleaned up {} browser sessions", cleaned_count),
+        "remaining_sessions": 0
+    }))
 }
 
 async fn create_browser_session(

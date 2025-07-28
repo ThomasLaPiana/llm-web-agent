@@ -66,7 +66,15 @@ health-local: ## Check local Ollama health
 	curl -f http://localhost:11434/api/tags || echo "Ollama service not responding"
 
 health-app: ## Check application health
-	curl -f http://localhost:3000/health || echo "Application not responding"
+	curl -f http://localhost:3000/health | jq || echo "Application not responding"
+
+health-sessions: ## Check session count and memory usage
+	@echo "📊 Current server status:"
+	@curl -s http://localhost:3000/health | jq '.active_sessions, .memory_usage_mb, .timestamp' || echo "❌ Unable to get session status"
+
+cleanup-sessions: ## Clean up all browser sessions
+	@echo "🧹 Cleaning up all browser sessions..."
+	@curl -X POST http://localhost:3000/browser/sessions/cleanup | jq || echo "❌ Cleanup failed"
 
 ##################
 ## Load testing ##

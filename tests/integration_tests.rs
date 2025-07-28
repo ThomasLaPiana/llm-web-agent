@@ -99,9 +99,20 @@ async fn test_health_endpoint() {
         .expect("Health request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let text = response.text().await.expect("Response should have text");
-    assert_eq!(text, "LLM Web Agent is running!");
-    println!("✅ Health endpoint test passed");
+    let body: Value = response.json().await.expect("Response should be JSON");
+
+    assert_eq!(body["status"], "healthy");
+    assert_eq!(body["message"], "LLM Web Agent is running!");
+    assert!(
+        body["active_sessions"].is_number(),
+        "Should have session count"
+    );
+    assert!(body["timestamp"].is_string(), "Should have timestamp");
+
+    println!(
+        "✅ Health endpoint test passed - {} active sessions",
+        body["active_sessions"].as_u64().unwrap_or(0)
+    );
 }
 
 #[tokio::test]
