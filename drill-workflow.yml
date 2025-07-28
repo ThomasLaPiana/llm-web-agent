@@ -1,25 +1,20 @@
 ---
-# Heavy load test - Stress testing with complex browser automation workflows using real sessions
+# Workflow test - Real end-to-end browser automation testing with session extraction
+# Based on actual integration test patterns
 base: 'http://localhost:3000'
-iterations: 100
-concurrency: 10
-rampup: 30
+iterations: 1
+concurrency: 1
+rampup: 0
+timeout: 120
 
 plan:
-  # Fast endpoints for baseline testing
+  # Step 1: Health check
   - name: health_check
     request:
       url: /health
       method: GET
-    weight: 30
     
-  - name: root_check
-    request:
-      url: /
-      method: GET
-    weight: 20
-    
-  # Session creation and workflow - the core functionality
+  # Step 2: Create a browser session and extract the session ID
   - name: create_session
     request:
       url: /browser/session
@@ -28,23 +23,9 @@ plan:
         Content-Type: 'application/json'
       body: '{}'
     assign: session_response
-    weight: 25
     
-  # Navigation testing with real session IDs
-  - name: navigate_httpbin
-    request:
-      url: /browser/navigate
-      method: POST
-      headers:
-        Content-Type: 'application/json'
-      body: |
-        {
-          "session_id": "{{ session_response.body.session_id }}", 
-          "url": "https://httpbin.org/html"
-        }
-    weight: 10
-        
-  - name: navigate_example
+  # Step 3: Navigate using the real session ID (from integration tests)
+  - name: navigate_to_httpbin
     request:
       url: /browser/navigate
       method: POST
@@ -53,12 +34,12 @@ plan:
       body: |
         {
           "session_id": "{{ session_response.body.session_id }}",
-          "url": "https://example.com"
+          "url": "https://httpbin.org/html"
         }
-    weight: 5
+    assign: navigate_response
     
-  # Browser interactions with real session IDs
-  - name: interact_screenshot
+  # Step 4: Wait action (from integration tests)
+  - name: wait_for_load
     request:
       url: /browser/interact
       method: POST
@@ -68,12 +49,16 @@ plan:
         {
           "session_id": "{{ session_response.body.session_id }}",
           "action": {
-            "type": "Screenshot"
+            "type": "Wait",
+            "params": {
+              "duration_ms": 1000
+            }
           }
         }
-    weight: 5
-        
-  - name: interact_page_source
+    assign: wait_response
+    
+  # Step 5: Get page source (from integration tests)
+  - name: get_page_source
     request:
       url: /browser/interact
       method: POST
@@ -86,9 +71,10 @@ plan:
             "type": "GetPageSource"
           }
         }
-    weight: 3
-        
-  - name: interact_wait
+    assign: source_response
+    
+  # Step 6: Take screenshot (from integration tests)
+  - name: take_screenshot
     request:
       url: /browser/interact
       method: POST
@@ -98,20 +84,17 @@ plan:
         {
           "session_id": "{{ session_response.body.session_id }}",
           "action": {
-            "type": "Wait",
-            "params": {
-              "duration_ms": 500
-            }
+            "type": "Screenshot"
           }
         }
-    weight: 2
+    assign: screenshot_response
 
-# Realistic delays to simulate real browser automation workflows
-delay: '1000..3000'
+# Sequential testing with delays for browser operations
+delay: '5000..8000'
 
 reports:
   - name: console
   - name: html
-    file: drill-heavy-report.html
+    file: drill-workflow-report.html
   - name: json
-    file: drill-heavy-report.json 
+    file: drill-workflow-report.json 

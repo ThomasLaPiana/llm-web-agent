@@ -1,24 +1,23 @@
 ---
-# Light load test - for basic functionality testing
+# Light load test - Quick functionality verification
 base: 'http://localhost:3000'
 iterations: 50
 concurrency: 5
 rampup: 10
 
 plan:
-  # Health check
+  # Basic endpoints - should be fast and reliable
   - name: health_check
     request:
       url: /health
       method: GET
     
-  # Root endpoint check
   - name: root_check
     request:
       url: /
       method: GET
     
-  # Create browser session
+  # Core functionality - session creation
   - name: create_session
     request:
       url: /browser/session
@@ -27,7 +26,7 @@ plan:
         Content-Type: 'application/json'
       body: '{}'
 
-# Minimal delay for light testing
+# Quick testing with minimal delays
 delay: '0.5..1'
 
 reports:
