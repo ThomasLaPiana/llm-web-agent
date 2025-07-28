@@ -1,0 +1,97 @@
+---
+# Heavy load test - for stress testing
+base: 'http://localhost:3000'
+iterations: 500
+concurrency: 50
+rampup: 60
+
+plan:
+  # Health check
+  - name: health_check
+    request:
+      url: /health
+      method: GET
+    
+  # Create multiple browser sessions
+  - name: create_session_1
+    request:
+      url: /browser/session
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: '{}'
+      
+  - name: create_session_2
+    request:
+      url: /browser/session
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: '{}'
+    
+  # Navigate to different URLs
+  - name: navigate_example
+    request:
+      url: /browser/navigate
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: |
+        {
+          "session_id": "load-test-session-1",
+          "url": "https://example.com"
+        }
+        
+  - name: navigate_httpbin
+    request:
+      url: /browser/navigate
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: |
+        {
+          "session_id": "load-test-session-2",
+          "url": "https://httpbin.org"
+        }
+    
+  # Multiple interaction types
+  - name: interact_screenshot
+    request:
+      url: /browser/interact
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: |
+        {
+          "session_id": "load-test-session-1",
+          "action": {
+            "Screenshot": {}
+          }
+        }
+        
+  - name: interact_scroll
+    request:
+      url: /browser/interact
+      method: POST
+      headers:
+        Content-Type: 'application/json'
+      body: |
+        {
+          "session_id": "load-test-session-2",
+          "action": {
+            "Scroll": {
+              "direction": "down",
+              "pixels": 500
+            }
+          }
+        }
+
+# Variable delays to simulate real user behavior
+delay: '2..5'
+
+reports:
+  - name: console
+  - name: html
+    file: drill-heavy-report.html
+  - name: json
+    file: drill-heavy-report.json 

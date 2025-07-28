@@ -38,18 +38,12 @@ services:
       mistral-local:
         condition: service_healthy
     restart: unless-stopped
-
-  # Model initialization service
-  mistral-init:
-    image: curlimages/curl:latest
-    container_name: mistral-init
-    depends_on:
-      mistral-local:
-        condition: service_healthy
-    volumes:
-      - ./scripts:/scripts:ro
-    entrypoint: ["/scripts/init-models.sh"]
-    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
 volumes:
   ollama_data:

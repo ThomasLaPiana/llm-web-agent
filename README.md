@@ -147,3 +147,23 @@ make status
 make health-local  # Check Ollama
 make health-app    # Check application
 ```
+
+### Load Testing
+
+The project includes comprehensive load testing capabilities using [Drill](https://github.com/fcsonline/drill):
+
+```bash
+# Check server health before testing
+make load-test-check
+
+# Run different load test scenarios
+make load-test-light      # Light test (50 iterations, 5 concurrent)
+make load-test-standard   # Standard test (100 iterations, 10 concurrent)
+make load-test-heavy      # Heavy stress test (500 iterations, 50 concurrent)
+make load-test-all        # Run all standard tests
+
+# Clean up test reports
+make load-test-clean
+```
+
+See [LOAD_TESTING.md](LOAD_TESTING.md) for detailed documentation.
