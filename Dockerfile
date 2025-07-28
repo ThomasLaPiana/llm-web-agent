@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.88-slim as builder
+FROM rust:1.88-slim AS builder
 
 WORKDIR /usr/src/app
 
@@ -19,7 +19,7 @@ COPY src ./src
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS prod
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

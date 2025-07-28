@@ -1,6 +1,10 @@
 # Dockerfile for local Mistral service using Ollama
 FROM ollama/ollama:latest
 
+# Install curl for healthchecks
+USER root
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Set environment variables
 ENV OLLAMA_HOST=0.0.0.0
 ENV OLLAMA_PORT=11434
