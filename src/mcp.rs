@@ -177,13 +177,22 @@ impl MCPClient {
             }),
         };
 
-        let response = self
+        let response = match self
             .client
             .post(&chat_endpoint)
             .json(&ollama_request)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send request to local Ollama: {}", e))?;
+        {
+            Ok(response) => response,
+            Err(e) => {
+                warn!(
+                    "Failed to connect to local Ollama: {}, falling back to simple extraction",
+                    e
+                );
+                return Ok(self.create_fallback_product_info());
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -474,13 +483,19 @@ Be precise and extract only the most relevant information.".to_string()
             }),
         };
 
-        let response = self
+        let response = match self
             .client
             .post(&chat_endpoint)
             .json(&ollama_request)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send request to local Ollama: {}", e))?;
+        {
+            Ok(response) => response,
+            Err(e) => {
+                warn!("Failed to connect to local Ollama for automation: {}, falling back to simple plan", e);
+                return Ok(self.create_fallback_plan(request));
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();

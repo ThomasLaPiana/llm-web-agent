@@ -35,13 +35,42 @@ impl Drop for TestCleanupGuard {
             .arg("-f")
             .arg("chrome")
             .output();
+        let _ = std::process::Command::new("pkill")
+            .arg("-f")
+            .arg("chromium")
+            .output();
 
-        // Clean up temp directories
+        // Clean up temp directories more thoroughly
         let temp_dir = std::env::temp_dir();
         let chromium_dir = temp_dir.join("chromiumoxide-runner");
         if chromium_dir.exists() {
             let _ = std::fs::remove_dir_all(&chromium_dir);
         }
+
+        // Clean up additional Chrome temp directories
+        if let Ok(output) = std::process::Command::new("find")
+            .args(&[
+                "/private/var/folders",
+                "-name",
+                "chromiumoxide-runner",
+                "-type",
+                "d",
+            ])
+            .output()
+        {
+            if let Ok(paths) = String::from_utf8(output.stdout) {
+                for path in paths.lines() {
+                    if !path.trim().is_empty() {
+                        let _ = std::fs::remove_dir_all(path.trim());
+                    }
+                }
+            }
+        }
+
+        // Clean up Chrome singleton lock files
+        let _ = std::process::Command::new("find")
+            .args(&["/private/var/folders", "-name", "SingletonLock", "-delete"])
+            .output();
 
         println!("✅ Final test cleanup completed");
     }
@@ -97,6 +126,54 @@ pub async fn ensure_server_running() {
     }
 
     panic!("❌ Test server failed to start within 30 seconds");
+}
+
+// Clean up any existing browser processes and temp files
+pub fn cleanup_browser_environment() {
+    // Kill any existing Chrome processes
+    let _ = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("chrome")
+        .output();
+    let _ = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("chromium")
+        .output();
+
+    // Clean up temp directories
+    let temp_dir = std::env::temp_dir();
+    let chromium_dir = temp_dir.join("chromiumoxide-runner");
+    if chromium_dir.exists() {
+        let _ = std::fs::remove_dir_all(&chromium_dir);
+    }
+
+    // Clean up Chrome temp directories
+    if let Ok(output) = std::process::Command::new("find")
+        .args(&[
+            "/private/var/folders",
+            "-name",
+            "chromiumoxide-runner",
+            "-type",
+            "d",
+        ])
+        .output()
+    {
+        if let Ok(paths) = String::from_utf8(output.stdout) {
+            for path in paths.lines() {
+                if !path.trim().is_empty() {
+                    let _ = std::fs::remove_dir_all(path.trim());
+                }
+            }
+        }
+    }
+
+    // Clean up Chrome singleton lock files specifically
+    let _ = std::process::Command::new("find")
+        .args(&["/private/var/folders", "-name", "SingletonLock", "-delete"])
+        .output();
+
+    // Give the system a moment to clean up
+    std::thread::sleep(std::time::Duration::from_millis(1000));
 }
 
 // Helper function to create a browser session
