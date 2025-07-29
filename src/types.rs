@@ -134,6 +134,34 @@ pub struct TaskResult {
     pub error: Option<String>,
 }
 
+// Product extraction types
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProductExtractionRequest {
+    pub url: String,
+    pub session_id: Option<String>, // Optional - will create temporary session if not provided
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProductExtractionResponse {
+    pub success: bool,
+    pub product: Option<ProductInfo>,
+    pub error: Option<String>,
+    pub extraction_time_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProductInfo {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub price: Option<String>,
+    pub availability: Option<String>,
+    pub brand: Option<String>,
+    pub rating: Option<String>,
+    pub image_url: Option<String>,
+    pub raw_data: Option<String>, // For debugging - contains the raw HTML that was analyzed
+}
+
 // Error handling
 
 #[derive(Debug, thiserror::Error)]

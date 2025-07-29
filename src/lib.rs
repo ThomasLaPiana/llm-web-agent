@@ -58,6 +58,7 @@ pub async fn run_server() -> anyhow::Result<()> {
         .route("/browser/interact", post(interact_with_page))
         .route("/browser/extract", post(extract_page_data))
         .route("/automation/task", post(execute_automation_task))
+        .route("/product/information", post(extract_product_information))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -263,5 +264,89 @@ async fn execute_automation_task(
         success: true,
         task_id: Uuid::new_v4().to_string(),
         results,
+    }))
+}
+
+async fn extract_product_information(
+    State(state): State<AppState>,
+    Json(request): Json<ProductExtractionRequest>,
+) -> Result<Json<ProductExtractionResponse>, AppError> {
+    let start_time = std::time::Instant::now();
+
+    info!(
+        "Starting product information extraction for URL: {}",
+        request.url
+    );
+
+    // Determine if we should use existing session or create a temporary one
+    let use_existing_session = request.session_id.is_some();
+    let session_id = request
+        .session_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    // Get or create browser session
+    let (html_content, _cleanup_session) = if use_existing_session {
+        // Use existing session
+        let mut sessions = state.browser_sessions.write().await;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.clone()))?;
+
+        // Navigate to URL and get page content
+        session
+            .navigate(&request.url)
+            .await
+            .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+        // Wait a moment for page to load
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
+        let content = session
+            .interact(&BrowserAction::GetPageSource)
+            .await
+            .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+        (content, false)
+    } else {
+        // Create temporary session
+        let mut browser_session = browser::BrowserSession::new()
+            .await
+            .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+        browser_session
+            .navigate(&request.url)
+            .await
+            .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+        // Wait a moment for page to load
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
+        let content = browser_session
+            .interact(&BrowserAction::GetPageSource)
+            .await
+            .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+        (content, true)
+    };
+
+    // Extract product information using LLM
+    let product_info = state
+        .mcp_client
+        .extract_product_information(&request.url, &html_content)
+        .await
+        .map_err(|e| AppError::MCPError(e.to_string()))?;
+
+    let extraction_time = start_time.elapsed().as_millis() as u64;
+
+    info!(
+        "Product extraction completed in {}ms for URL: {}",
+        extraction_time, request.url
+    );
+
+    Ok(Json(ProductExtractionResponse {
+        success: true,
+        product: Some(product_info),
+        error: None,
+        extraction_time_ms: extraction_time,
     }))
 }

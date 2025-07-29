@@ -133,6 +133,301 @@ impl MCPClient {
         })
     }
 
+    pub async fn extract_product_information(
+        &self,
+        url: &str,
+        html_content: &str,
+    ) -> anyhow::Result<crate::types::ProductInfo> {
+        info!("Extracting product information from URL: {}", url);
+
+        match self.mode {
+            MistralMode::Local => self.extract_with_local_ollama(url, html_content).await,
+            MistralMode::Cloud => self.extract_with_cloud_api(url, html_content).await,
+        }
+    }
+
+    async fn extract_with_local_ollama(
+        &self,
+        url: &str,
+        html_content: &str,
+    ) -> anyhow::Result<crate::types::ProductInfo> {
+        let default_endpoint = "http://localhost:11434".to_string();
+        let endpoint = self.local_endpoint.as_ref().unwrap_or(&default_endpoint);
+        let chat_endpoint = format!("{}/api/chat", endpoint);
+
+        let system_prompt = self.get_product_extraction_prompt();
+        let user_prompt = self.format_product_extraction_prompt(url, html_content);
+
+        let ollama_request = OllamaRequest {
+            model: "mistral:latest".to_string(),
+            messages: vec![
+                Message {
+                    role: "system".to_string(),
+                    content: system_prompt,
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: user_prompt,
+                },
+            ],
+            stream: false,
+            options: Some(OllamaOptions {
+                temperature: 0.1,
+                num_predict: Some(1000),
+            }),
+        };
+
+        let response = self
+            .client
+            .post(&chat_endpoint)
+            .json(&ollama_request)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send request to local Ollama: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            warn!(
+                "Local Ollama error {}: {}, falling back to simple extraction",
+                status, error_text
+            );
+            return Ok(self.create_fallback_product_info());
+        }
+
+        let ollama_response: OllamaResponse = response
+            .json()
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Failed to parse Ollama response: {}, falling back to simple extraction",
+                    e
+                );
+                e
+            })
+            .unwrap_or_else(|_| OllamaResponse {
+                message: ResponseMessage {
+                    content: None,
+                    tool_calls: None,
+                },
+                done: true,
+            });
+
+        self.parse_product_info_from_ollama(&ollama_response)
+    }
+
+    async fn extract_with_cloud_api(
+        &self,
+        url: &str,
+        html_content: &str,
+    ) -> anyhow::Result<crate::types::ProductInfo> {
+        if self.api_key.is_none() {
+            return Ok(self.create_fallback_product_info());
+        }
+
+        let system_prompt = self.get_product_extraction_prompt();
+        let user_prompt = self.format_product_extraction_prompt(url, html_content);
+
+        let mistral_request = MistralRequest {
+            model: "mistral-large-latest".to_string(),
+            messages: vec![
+                Message {
+                    role: "system".to_string(),
+                    content: system_prompt,
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: user_prompt,
+                },
+            ],
+            temperature: 0.1,
+            max_tokens: Some(1000),
+            tools: None, // For simplicity, we'll parse from text response
+        };
+
+        let mut request_builder = self.client.post(&self.api_endpoint).json(&mistral_request);
+
+        if let Some(api_key) = &self.api_key {
+            request_builder = request_builder.bearer_auth(api_key);
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send request to Mistral: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            warn!(
+                "Mistral API error {}: {}, using fallback extraction",
+                status, error_text
+            );
+            return Ok(self.create_fallback_product_info());
+        }
+
+        let mistral_response: MistralResponse = response
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse Mistral response: {}", e))?;
+
+        self.parse_product_info_from_mistral(&mistral_response)
+    }
+
+    fn get_product_extraction_prompt(&self) -> String {
+        "You are a product information extraction assistant. Your job is to analyze HTML content from e-commerce websites and extract key product information.
+
+Extract the following information from the provided HTML:
+- Product name
+- Product description (brief summary)
+- Price (including currency if available)
+- Availability status
+- Brand name
+- Rating/reviews if available
+- Main product image URL
+
+Return the information as a JSON object with the following structure:
+{
+  \"name\": \"Product name\",
+  \"description\": \"Brief product description\",
+  \"price\": \"$XX.XX or price string\",
+  \"availability\": \"In stock/Out of stock/etc\",
+  \"brand\": \"Brand name\",
+  \"rating\": \"X.X stars or rating info\",
+  \"image_url\": \"URL to main product image\"
+}
+
+If any information is not available, use null for that field.
+Focus on the main product being displayed on the page.
+Be precise and extract only the most relevant information.".to_string()
+    }
+
+    fn format_product_extraction_prompt(&self, url: &str, html_content: &str) -> String {
+        // Truncate HTML content to avoid token limits
+        let max_html_length = 8000;
+        let truncated_html = if html_content.len() > max_html_length {
+            format!("{}...[truncated]", &html_content[..max_html_length])
+        } else {
+            html_content.to_string()
+        };
+
+        format!(
+            "URL: {}\n\nHTML Content:\n{}\n\nPlease extract the product information from this HTML content and return it as JSON.",
+            url, truncated_html
+        )
+    }
+
+    fn parse_product_info_from_ollama(
+        &self,
+        response: &OllamaResponse,
+    ) -> anyhow::Result<crate::types::ProductInfo> {
+        if let Some(content) = &response.message.content {
+            if let Some(start) = content.find('{') {
+                if let Some(end) = content.rfind('}') {
+                    let json_str = &content[start..=end];
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        return Ok(crate::types::ProductInfo {
+                            name: parsed
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            description: parsed
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            price: parsed
+                                .get("price")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            availability: parsed
+                                .get("availability")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            brand: parsed
+                                .get("brand")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            rating: parsed
+                                .get("rating")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            image_url: parsed
+                                .get("image_url")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            raw_data: Some(content.clone()),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(self.create_fallback_product_info())
+    }
+
+    fn parse_product_info_from_mistral(
+        &self,
+        response: &MistralResponse,
+    ) -> anyhow::Result<crate::types::ProductInfo> {
+        if let Some(choice) = response.choices.first() {
+            if let Some(content) = &choice.message.content {
+                if let Some(start) = content.find('{') {
+                    if let Some(end) = content.rfind('}') {
+                        let json_str = &content[start..=end];
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            return Ok(crate::types::ProductInfo {
+                                name: parsed
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                description: parsed
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                price: parsed
+                                    .get("price")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                availability: parsed
+                                    .get("availability")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                brand: parsed
+                                    .get("brand")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                rating: parsed
+                                    .get("rating")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                image_url: parsed
+                                    .get("image_url")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                raw_data: Some(content.clone()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(self.create_fallback_product_info())
+    }
+
+    fn create_fallback_product_info(&self) -> crate::types::ProductInfo {
+        crate::types::ProductInfo {
+            name: Some("Unable to extract product name".to_string()),
+            description: Some("Product information extraction failed".to_string()),
+            price: None,
+            availability: None,
+            brand: None,
+            rating: None,
+            image_url: None,
+            raw_data: None,
+        }
+    }
+
     pub async fn process_automation_request(
         &self,
         request: &AutomationRequest,
