@@ -53,7 +53,13 @@ tokio-test = "0.4"
 # HTTP client for testing (reuse main dependency)
 reqwest = { version = "0.11", features = ["json"] }
 
-# Test configuration - uncomment when test files are created
-# [[test]]
-# name = "integration_tests"
-# harness = true
+# Integration test configuration
+[[test]]
+name = "browser"
+path = "tests/integration/browser.rs"
+harness = true
+
+[[test]]
+name = "product_extraction"
+path = "tests/integration/product_extraction.rs"
+harness = true
