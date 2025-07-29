@@ -8,28 +8,63 @@ use tokio::time::sleep;
 const SERVER_URL: &str = "http://127.0.0.1:3000";
 static INIT: Once = Once::new();
 static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
+static CLEANUP_GUARD: Once = Once::new();
 
-// Helper function to clean up Chrome processes and temp directories
-fn cleanup_chrome() {
-    // Kill any lingering Chrome processes
-    let _ = std::process::Command::new("pkill")
-        .arg("-f")
-        .arg("chrome")
-        .output();
+// Cleanup guard that runs once at the end of all tests
+struct TestCleanupGuard;
 
-    // Clean up the specific chromiumoxide-runner directory that causes conflicts
-    let temp_dir = std::env::temp_dir();
-    let chromium_dir = temp_dir.join("chromiumoxide-runner");
-    if chromium_dir.exists() {
-        let _ = std::fs::remove_dir_all(&chromium_dir);
+impl Drop for TestCleanupGuard {
+    fn drop(&mut self) {
+        println!("🧹 Running final test cleanup...");
+
+        // Clean up any remaining browser sessions via API
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = reqwest::Client::new();
+            if let Ok(_) = client
+                .post(&format!("{}/browser/sessions/cleanup", SERVER_URL))
+                .send()
+                .await
+            {
+                println!("✅ Cleaned up browser sessions via API");
+            }
+        });
+
+        // Kill any lingering Chrome processes
+        let _ = std::process::Command::new("pkill")
+            .arg("-f")
+            .arg("chrome")
+            .output();
+
+        // Clean up temp directories
+        let temp_dir = std::env::temp_dir();
+        let chromium_dir = temp_dir.join("chromiumoxide-runner");
+        if chromium_dir.exists() {
+            let _ = std::fs::remove_dir_all(&chromium_dir);
+        }
+
+        println!("✅ Final test cleanup completed");
     }
+}
 
-    // Wait longer for cleanup to complete and processes to fully terminate
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+// Initialize cleanup guard once
+fn ensure_cleanup_guard() {
+    CLEANUP_GUARD.call_once(|| {
+        // Create a static cleanup guard that will drop when the program exits
+        std::thread::spawn(|| {
+            let _guard = TestCleanupGuard;
+            // Keep this thread alive until the program exits
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    });
 }
 
 // Start server once for all tests
 async fn ensure_server_running() {
+    ensure_cleanup_guard();
+
     INIT.call_once(|| {
         // Start the server in a background thread
         std::thread::spawn(|| {
@@ -175,7 +210,6 @@ async fn test_navigation_api_contract() {
 
 #[tokio::test]
 async fn test_wait_action() {
-    cleanup_chrome();
     ensure_server_running().await;
 
     let session_id = create_session()
@@ -221,7 +255,6 @@ async fn test_wait_action() {
 
 #[tokio::test]
 async fn test_automation_task_fallback() {
-    cleanup_chrome();
     ensure_server_running().await;
 
     let session_id = create_session()
@@ -258,7 +291,6 @@ async fn test_automation_task_fallback() {
 // Tests that require actual browser navigation
 #[tokio::test]
 async fn test_real_browser_navigation() {
-    cleanup_chrome();
     ensure_server_running().await;
 
     let session_id = create_session()
@@ -335,7 +367,6 @@ async fn test_real_browser_navigation() {
 
 #[tokio::test]
 async fn test_browser_screenshot() {
-    cleanup_chrome();
     ensure_server_running().await;
 
     let session_id = create_session()
