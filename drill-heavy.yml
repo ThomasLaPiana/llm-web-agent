@@ -1,9 +1,9 @@
 ---
 # Heavy load test - Stress testing with complex browser automation workflows using real sessions
 base: 'http://localhost:3000'
-iterations: 100
+iterations: 50
 concurrency: 10
-rampup: 30
+rampup: 10
 
 plan:
   # Fast endpoints for baseline testing
@@ -11,13 +11,11 @@ plan:
     request:
       url: /health
       method: GET
-    weight: 30
     
   - name: root_check
     request:
       url: /
       method: GET
-    weight: 20
     
   # Session creation and workflow - the core functionality
   - name: create_session
@@ -28,7 +26,6 @@ plan:
         Content-Type: 'application/json'
       body: '{}'
     assign: session_response
-    weight: 25
     
   # Navigation testing with real session IDs
   - name: navigate_httpbin
@@ -42,7 +39,6 @@ plan:
           "session_id": "{{ session_response.body.session_id }}", 
           "url": "https://httpbin.org/html"
         }
-    weight: 10
         
   - name: navigate_example
     request:
@@ -55,7 +51,6 @@ plan:
           "session_id": "{{ session_response.body.session_id }}",
           "url": "https://example.com"
         }
-    weight: 5
     
   # Browser interactions with real session IDs
   - name: interact_screenshot
@@ -71,7 +66,6 @@ plan:
             "type": "Screenshot"
           }
         }
-    weight: 5
         
   - name: interact_page_source
     request:
@@ -86,7 +80,6 @@ plan:
             "type": "GetPageSource"
           }
         }
-    weight: 3
         
   - name: interact_wait
     request:
@@ -104,10 +97,9 @@ plan:
             }
           }
         }
-    weight: 2
 
 # Realistic delays to simulate real browser automation workflows
-delay: '1000..3000'
+delay: '500..2000'
 
 reports:
   - name: console

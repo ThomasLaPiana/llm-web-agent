@@ -12,10 +12,6 @@ ENV OLLAMA_PORT=11434
 # Create data directory for models (ollama typically uses /root/.ollama when running as root)
 RUN mkdir -p /root/.ollama
 
-# Prepare the models for usage in the container
-COPY scripts/init-models.sh /init-models.sh
-RUN chmod +x /init-models.sh
-
 # Expose the default Ollama port
 EXPOSE 11434
 

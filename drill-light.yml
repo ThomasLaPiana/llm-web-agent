@@ -1,8 +1,8 @@
 ---
 # Light load test - Quick functionality verification
 base: 'http://localhost:3000'
-iterations: 50
-concurrency: 5
+iterations: 100
+concurrency: 10
 rampup: 10
 
 plan:

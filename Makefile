@@ -68,10 +68,6 @@ health-local: ## Check local Ollama health
 health-app: ## Check application health
 	curl -f http://localhost:3000/health | jq || echo "Application not responding"
 
-health-sessions: ## Check session count and memory usage
-	@echo "📊 Current server status:"
-	@curl -s http://localhost:3000/health | jq '.active_sessions, .memory_usage_mb, .timestamp' || echo "❌ Unable to get session status"
-
 cleanup-sessions: ## Clean up all browser sessions
 	@echo "🧹 Cleaning up all browser sessions..."
 	@curl -X POST http://localhost:3000/browser/sessions/cleanup | jq || echo "❌ Cleanup failed"
@@ -84,21 +80,23 @@ load-test-check: ## Check if server is running before load tests
 	@echo "Checking if LLM Web Agent server is running..."
 	@curl -f -s http://localhost:3000/health > /dev/null && echo "✅ Server is running and healthy!" || (echo "❌ Server is not running! Start with: make dev" && exit 1)
 
-load-test-light: load-test-check ## Run light load test (50 iterations, 5 concurrent users)
+load-test-light: load-test-check ## Run light load test for basic functionality
 	@echo "🚀 Running light load test..."
-	drill --stats --benchmark drill-light.yml
+	@make cleanup-sessions
+	drill --stats --timeout 30 --benchmark drill-light.yml
+	@make cleanup-sessions
 	@echo "✅ Light load test completed! Check drill-light-report.html for results."
 
-load-test-heavy: load-test-check ## Run heavy stress test with browser automation (200 iterations, 20 concurrent users)
-	@echo "⚠️  Running heavy load test with browser automation (200 iterations, 20 concurrent users)..."
-	@echo "⚠️  This test may put significant load on your system!"
-	@read -p "Are you sure you want to continue? (y/N): " confirm && [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ] || (echo "Heavy load test cancelled." && exit 1)
-	drill --stats --benchmark drill-heavy.yml
+load-test-heavy: load-test-check ## Run heavy stress test with browser automation
+	@echo "⚠️  Running heavy load test with browser automation..."
+	@make cleanup-sessions
+	drill --stats --timeout 60 --benchmark drill-heavy.yml
+	@make cleanup-sessions
 	@echo "✅ Heavy load test completed! Check drill-heavy-report.html for results."
 
 load-test-workflow: load-test-check ## Run workflow test (demonstrates full browser automation API)
 	@echo "🚀 Running browser automation workflow test..."
-	drill --stats --benchmark drill-workflow.yml
+	drill --stats --timeout 30 --benchmark drill-workflow.yml
 	@echo "✅ Workflow test completed! Check drill-workflow-report.html for results."
 
 load-test-session: load-test-check ## Run simple session test (tests session ID extraction)
