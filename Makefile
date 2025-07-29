@@ -119,8 +119,6 @@ load-test-all: load-test-light load-test-heavy load-test-workflow ## Run all loa
 test-docker: ## Run integration tests against Docker server
 	@echo "🚀 Starting Docker services for testing..."
 	@docker-compose up -d --wait
-	@echo "⏳ Waiting for services to be fully ready..."
-	@sleep 10
 	@echo "🧪 Running integration tests..."
 	@RUST_LOG=info cargo test --test integration_tests -- --nocapture || true
 	@echo "🧹 Cleaning up Docker services..."

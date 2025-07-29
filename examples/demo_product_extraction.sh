@@ -179,7 +179,7 @@ main() {
     # Scenario 1: Extract without existing session (Amazon Star Wars Echo Dot)
     echo -e "${YELLOW}Scenario 1: Extract product info without existing session${NC}"
     extract_product \
-        "https://www.amazon.com/Star-Wars-Echo-Dot-bundle/dp/B0DZQ92XQZ/?_encoding=UTF8&pd_rd_w=J2REa&content-id=amzn1.sym.facdd3a9-7c82-4bfb-a2c8-ce73833c9be4&pf_rd_p=facdd3a9-7c82-4bfb-a2c8-ce73833c9be4&pf_rd_r=NGBMAN14SM5N4SCFJXGT&pd_rd_wg=5je2T&pd_rd_r=4ed5974f-7ae0-4192-9993-eaf90ae98cce&ref_=pd_hp_d_atf_dealz_sv&th=1" \
+        "" \
         "" \
         "Extracting Amazon Star Wars Echo Dot information (temporary session)"
     

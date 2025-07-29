@@ -319,7 +319,7 @@ async fn extract_product_information(
             .map_err(|e| AppError::BrowserError(e.to_string()))?;
 
         // Wait a moment for page to load
-        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         let content = browser_session
             .interact(&BrowserAction::GetPageSource)
