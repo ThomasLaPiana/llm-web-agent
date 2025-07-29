@@ -110,4 +110,33 @@ load-test-clean: ## Clean up load test report files
 	@echo "✅ Load test reports cleaned up."
 
 load-test-all: load-test-light load-test-heavy load-test-workflow ## Run all load tests (light, heavy, and workflow)
-	@echo "✅ All load tests completed!" 
+	@echo "✅ All load tests completed!"
+
+###################
+## Testing       ##
+###################
+
+test-docker: ## Run integration tests against Docker server
+	@echo "🚀 Starting Docker services for testing..."
+	@docker-compose up -d --wait
+	@echo "⏳ Waiting for services to be fully ready..."
+	@sleep 10
+	@echo "🧪 Running integration tests..."
+	@RUST_LOG=info cargo test --test integration_tests -- --nocapture || true
+	@echo "🧹 Cleaning up Docker services..."
+	@docker-compose down
+	@echo "✅ Integration tests completed!"
+
+test-docker-keep: ## Run tests against Docker server (keep services running)
+	@echo "🚀 Starting Docker services for testing..."
+	@docker-compose up -d --wait
+	@echo "⏳ Waiting for services to be fully ready..."
+	@sleep 10
+	@echo "🧪 Running integration tests..."
+	@RUST_LOG=info cargo test --test integration_tests -- --nocapture
+	@echo "✅ Integration tests completed! (Services still running - use 'make docker-down' to stop)"
+
+test-quick: ## Run tests against existing running server (no Docker management)
+	@echo "🧪 Running integration tests against existing server..."
+	@curl -f http://localhost:3000/health > /dev/null && echo "✅ Server is healthy!" || (echo "❌ Server not running! Use 'make test-docker' or start server manually" && exit 1)
+	@RUST_LOG=info cargo test --test integration_tests -- --nocapture 

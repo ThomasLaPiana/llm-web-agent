@@ -55,11 +55,6 @@ reqwest = { version = "0.11", features = ["json"] }
 
 # Integration test configuration
 [[test]]
-name = "browser"
-path = "tests/integration/browser.rs"
-harness = true
-
-[[test]]
-name = "product_extraction"
-path = "tests/integration/product_extraction.rs"
+name = "integration_tests"
+path = "tests/integration_tests.rs"
 harness = true
