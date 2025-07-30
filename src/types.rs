@@ -10,6 +10,19 @@ use std::collections::HashMap;
 // Request/Response types for API endpoints
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct SessionCreateRequest {
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub session_id: String,
+    pub active: bool,
+    pub current_url: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSessionResponse {
     pub session_id: String,
 }

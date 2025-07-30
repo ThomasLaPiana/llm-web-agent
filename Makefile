@@ -54,6 +54,7 @@ init-models: ## Initialize Mistral models in local Ollama (run after docker-up)
 	@echo "Initializing Mistral models..."
 	docker exec mistral-local ollama pull mistral:latest
 	docker exec mistral-local ollama pull mistral:7b
+	docker exec mistral-local ollama pull llama3.2:latest
 	@echo "Models initialized successfully!"
 
 status: ## Check service status

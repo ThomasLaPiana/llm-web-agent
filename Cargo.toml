@@ -37,8 +37,16 @@ uuid = { version = "1.0", features = ["v4"] }
 # Environment variables
 dotenv = "0.15"
 
-# MCP protocol support (remove this line as it may not exist)
-# mcp = "0.1"
+# MCP protocol support - using official SDK
+# mcp = "0.1"  # Will implement manually for now
+
+# HTML parsing and content extraction
+scraper = "0.20"
+html5ever = "0.26"
+readability = "0.3"
+
+# CSS selector parsing
+cssparser = "0.31"
 
 # Base64 encoding
 base64 = "0.21"
