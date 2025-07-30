@@ -23,6 +23,7 @@ docker-build: ## Build Docker images
 
 docker-up: ## Start all services with Docker Compose
 	docker-compose up --wait
+	make init-models
 
 docker-down: ## Stop all Docker services
 	docker-compose down

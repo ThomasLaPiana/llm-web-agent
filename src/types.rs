@@ -27,6 +27,12 @@ pub struct CreateSessionResponse {
     pub session_id: String,
 }
 
+// Simplified product information request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProductInformationRequest {
+    pub url: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionStatusResponse {
     pub session_id: String,

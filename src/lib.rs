@@ -45,10 +45,12 @@ pub fn create_router() -> Router<AppState> {
     // Create the main API router
     let api_router = Router::new()
         .route("/health", get(health_check))
-        // Browser session management
+        // Simplified product information endpoint
+        .route("/product/information", post(get_product_information))
+        // Legacy browser session management (for advanced users)
         .route("/browser/session", post(create_session))
         .route("/browser/session/:session_id", get(get_session))
-        // Browser actions
+        // Legacy browser actions (for advanced users)
         .route("/browser/navigate", post(navigate))
         .route("/browser/extract", post(extract))
         // AI automation
@@ -66,6 +68,61 @@ async fn health_check() -> Json<serde_json::Value> {
         "status": "ok",
         "message": "LLM Web Agent with Llama + MCP is running"
     }))
+}
+
+// Simplified product information endpoint - handles everything internally
+async fn get_product_information(
+    State(state): State<AppState>,
+    Json(request): Json<ProductInformationRequest>,
+) -> Result<Json<ProductInfo>, StatusCode> {
+    info!("Getting product information for URL: {}", request.url);
+
+    // Create a temporary browser session
+    let mut session = match BrowserSession::new().await {
+        Ok(session) => session,
+        Err(e) => {
+            warn!("Failed to create browser session: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Navigate to the URL
+    if let Err(e) = session.navigate(&request.url).await {
+        warn!("Failed to navigate to {}: {}", request.url, e);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Give the page a moment to load
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Get the page content
+    let html_content = match session.interact(&BrowserAction::GetPageSource).await {
+        Ok(content) => content,
+        Err(e) => {
+            warn!("Failed to get page source: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Use Llama + MCP to extract product information
+    match state
+        .llama_client
+        .extract_product_information(&request.url, &html_content)
+        .await
+    {
+        Ok(product_info) => {
+            info!(
+                "Successfully extracted product information from {}",
+                request.url
+            );
+            Ok(Json(product_info))
+        }
+        Err(e) => {
+            warn!("Product extraction failed for {}: {}", request.url, e);
+            Err(StatusCode::UNPROCESSABLE_ENTITY)
+        }
+    }
+    // Note: Session will be automatically cleaned up when it goes out of scope
 }
 
 async fn create_session(
