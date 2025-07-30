@@ -1,169 +1,104 @@
 # LLM Web Agent
 
-A powerful web automation service that combines browser automation with AI-powered task planning. This service provides a REST API for automating web tasks using natural language descriptions.
+A powerful web automation service that combines browser automation with AI-powered product extraction. This service provides a REST API for extracting product information from e-commerce websites using Llama LLM and Model Context Protocol (MCP) tools.
 
 ## Features
 
+- **Intelligent Product Extraction**: Extract structured product data from any e-commerce website
+- **Llama + MCP Integration**: Uses local Llama models with MCP tools for enhanced reasoning
 - **REST API Server**: Built with Axum for high-performance web service
 - **Browser Automation**: Uses chromiumoxide for headless browser control
-- **AI Task Planning**: Integrates with Mistral LLM via API for intelligent task breakdown
+- **Docker Deployment**: Simple containerized setup with automatic model initialization
 - **Session Management**: Manages multiple browser sessions concurrently
-- **Flexible Actions**: Supports clicking, typing, scrolling, screenshot capture, and custom JavaScript execution
-- **Data Extraction**: Extract structured data from web pages using CSS selectors
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust 1.70+
-- Chrome/Chromium browser (for full functionality)
-- Docker & Docker Compose (for local Mistral service)
-- Mistral API key (for cloud mode, optional with local mode)
+- Docker & Docker Compose
+- `make` command
+- `jq` command (for JSON processing)
+- Chrome/Chromium browser (automatically handled in Docker)
+
+### Setup & Usage
+
+```bash
+# Start the service
+make docker-up
+
+# Test with the demo script
+./examples/simple_demo.sh
+
+# Extract product information
+curl -X POST http://localhost:3000/product/information \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.amazon.com/some-product"}'
+```
 
 ## Architecture
 
 ```txt
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   REST API      │    │   Browser       │    │   Mistral LLM   │
-│   (Axum)        │◄──►│  (chromiumoxide)│    │   (Local/Cloud) │
+│   REST API      │    │   Browser       │    │   Llama + MCP   │
+│   (Axum)        │◄──►│  (chromiumoxide)│◄──►│   (Ollama)      │
 │                 │    │                 │    │                 │
-│ • Session Mgmt  │    │ • Page Control  │    │ • Task Planning │
-│ • Task Planning │    │ • Element Inter │    │ • Action Break  │
-│ • Data Extract  │    │ • Screenshot    │    │ • Fallback Plan │
+│ • Product API   │    │ • Page Loading  │    │ • Smart Extract │
+│ • Session Mgmt  │    │ • Content Get   │    │ • MCP Tools     │
+│ • MCP Server    │    │ • Screenshot    │    │ • Reasoning     │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
-                                               │                 │
-                                               ▼                 ▼
-                                          ┌─────────┐   ┌─────────────┐
-                                          │ Ollama  │   │ Mistral API │
-                                          │ (Local) │   │  (Cloud)    │
-                                          └─────────┘   └─────────────┘
 ```
-
-### Local vs Cloud Mode
-
-The service supports two modes for Mistral integration:
-
-- **Local Mode**: Uses dockerized Ollama with local Mistral models
-- **Cloud Mode**: Uses Mistral's cloud API (original behavior)
 
 ## API Endpoints
 
-### Health Check
+### Primary Endpoints
 
 - `GET /health` - Server health status
+- `POST /product/information` - Extract product data from any e-commerce URL
 
-### Browser Sessions
+### Advanced Browser Control (Optional)
 
 - `POST /browser/session` - Create a new browser session
 - `GET /browser/session/{session_id}` - Get session status
-
-### Browser Control
-
 - `POST /browser/navigate` - Navigate to a URL
-- `POST /browser/interact` - Perform browser actions
-- `POST /browser/extract` - Extract data from page
-
-### AI Automation
-
+- `POST /browser/extract` - Extract data from current page
 - `POST /automation/task` - Execute AI-planned automation tasks
 
-## Browser Actions
+### MCP Protocol
 
-The service supports various browser actions:
-
-| Action | Description | Parameters |
-|--------|-------------|------------|
-| `Click` | Click an element | `selector` |
-| `Type` | Type text into input | `selector`, `text` |
-| `Wait` | Wait for duration | `duration_ms` |
-| `WaitForElement` | Wait for element to appear | `selector`, `timeout_ms` |
-| `Scroll` | Scroll page | `direction`, `pixels` |
-| `Screenshot` | Capture screenshot | None |
-| `GetPageSource` | Get HTML source | None |
-| `ExecuteScript` | Run JavaScript | `script` |
+- `GET /.well-known/mcp/manifest.json` - MCP tools manifest
 
 ## Configuration
 
 ### Environment Variables
 
-#### General Configuration
-
-- `RUST_LOG`: Logging level (debug, info, warn, error)
+- `RUST_LOG`: Logging level (default: info)
 - `PORT`: Server port (default: 3000)
 
-#### Mistral Configuration
-
-- `MISTRAL_MODE`: Set to "local" for Ollama or "cloud" for API (default: cloud)
-
-#### Local Mode (Ollama)
-
-- `MISTRAL_LOCAL_ENDPOINT`: Ollama endpoint (default: http://localhost:11434)
-
-#### Cloud Mode (Mistral API)
-
-- `MISTRAL_API_KEY`: Your Mistral AI API key
-- `MISTRAL_API_ENDPOINT`: Mistral API endpoint (default: https://api.mistral.ai/v1/chat/completions)
-
-### Quick Setup Commands
-
-#### Local Development with Dockerized Mistral
+### Docker Setup
 
 ```bash
-# Setup environment
-make local-setup
-# Edit .env file as needed
-# Start all services
-make docker-up
-# Initialize models (first time only)
-make init-models
-```
-
-#### Cloud Development with Mistral API
-
-```bash
-# Setup environment
-make cloud-setup
-# Edit .env file and add your API key
-# Run the application
-cargo run
-```
-
-### Docker Commands
-
-```bash
-# Build and start all services
+# Setup and start all services
 make docker-up
 
 # View logs
 make docker-logs
 
-# Stop services
+# Stop services  
 make docker-down
+```
 
+### Additional Commands
+
+```bash
 # Check service status
 make status
 
 # Health checks
-make health-local  # Check Ollama
-make health-app    # Check application
+make health-app
+
+# Load testing
+make load-test-light    # Light test
+make load-test-heavy    # Stress test
 ```
 
-### Load Testing
-
-The project includes comprehensive load testing capabilities using [Drill](https://github.com/fcsonline/drill):
-
-```bash
-# Check server health before testing
-make load-test-check
-
-# Run different load test scenarios
-make load-test-light      # Light test (50 iterations, 5 concurrent)
-make load-test-standard   # Standard test (100 iterations, 10 concurrent)
-make load-test-heavy      # Heavy stress test (500 iterations, 50 concurrent)
-make load-test-all        # Run all standard tests
-
-# Clean up test reports
-make load-test-clean
-```
-
-See [LOAD_TESTING.md](LOAD_TESTING.md) for detailed documentation.
+See [LOAD_TESTING.md](LOAD_TESTING.md) for detailed load testing documentation.
