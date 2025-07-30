@@ -139,11 +139,24 @@ impl MCPClient {
         html_content: &str,
     ) -> anyhow::Result<crate::types::ProductInfo> {
         info!("Extracting product information from URL: {}", url);
+        info!("HTML content length: {} characters", html_content.len());
+        info!("Using Mistral mode: {:?}", self.mode);
 
-        match self.mode {
+        let result = match self.mode {
             MistralMode::Local => self.extract_with_local_ollama(url, html_content).await,
             MistralMode::Cloud => self.extract_with_cloud_api(url, html_content).await,
+        };
+
+        match &result {
+            Ok(product_info) => {
+                info!("Successfully extracted product info: {:?}", product_info);
+            }
+            Err(e) => {
+                warn!("Failed to extract product info: {}", e);
+            }
         }
+
+        result
     }
 
     async fn extract_with_local_ollama(
@@ -157,6 +170,13 @@ impl MCPClient {
 
         let system_prompt = self.get_product_extraction_prompt();
         let user_prompt = self.format_product_extraction_prompt(url, html_content);
+
+        info!("System prompt: {}", system_prompt);
+        info!("User prompt length: {} characters", user_prompt.len());
+        info!(
+            "User prompt preview: {}",
+            &user_prompt[..std::cmp::min(200, user_prompt.len())]
+        );
 
         let ollama_request = OllamaRequest {
             model: "mistral:latest".to_string(),
@@ -176,6 +196,8 @@ impl MCPClient {
                 num_predict: Some(1000),
             }),
         };
+
+        info!("Sending request to Ollama at: {}", chat_endpoint);
 
         let response = match self
             .client
@@ -221,6 +243,14 @@ impl MCPClient {
                 },
                 done: true,
             });
+
+        info!("Received Ollama response: {:?}", ollama_response);
+
+        if let Some(content) = &ollama_response.message.content {
+            info!("Ollama response content: {}", content);
+        } else {
+            warn!("Ollama response has no content");
+        }
 
         self.parse_product_info_from_ollama(&ollama_response)
     }
@@ -365,6 +395,7 @@ Be precise and extract only the most relevant information.".to_string()
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                             raw_data: Some(content.clone()),
+                            raw_llm_response: Some(content.clone()),
                         });
                     }
                 }
@@ -414,6 +445,7 @@ Be precise and extract only the most relevant information.".to_string()
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string()),
                                 raw_data: Some(content.clone()),
+                                raw_llm_response: Some(content.clone()),
                             });
                         }
                     }
@@ -434,6 +466,7 @@ Be precise and extract only the most relevant information.".to_string()
             rating: None,
             image_url: None,
             raw_data: None,
+            raw_llm_response: Some("No LLM response available (fallback mode)".to_string()),
         }
     }
 

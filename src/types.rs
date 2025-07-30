@@ -160,6 +160,22 @@ pub struct ProductInfo {
     pub rating: Option<String>,
     pub image_url: Option<String>,
     pub raw_data: Option<String>, // For debugging - contains the raw HTML that was analyzed
+    pub raw_llm_response: Option<String>, // Raw response from the LLM before parsing
+}
+
+// Debug endpoint types
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DebugPageRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DebugPageResponse {
+    pub success: bool,
+    pub url: String,
+    pub content_length: usize,
+    pub content: String,
+    pub title: String,
 }
 
 // Error handling

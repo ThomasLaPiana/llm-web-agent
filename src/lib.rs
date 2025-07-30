@@ -59,6 +59,7 @@ pub async fn run_server() -> anyhow::Result<()> {
         .route("/browser/extract", post(extract_page_data))
         .route("/automation/task", post(execute_automation_task))
         .route("/product/information", post(extract_product_information))
+        .route("/debug/page-content", post(debug_page_content))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -329,6 +330,13 @@ async fn extract_product_information(
         (content, true)
     };
 
+    // Debug logging
+    info!("HTML content length: {} characters", html_content.len());
+    info!(
+        "HTML content preview (first 500 chars): {}",
+        &html_content[..std::cmp::min(500, html_content.len())]
+    );
+
     // Extract product information using LLM
     let product_info = state
         .mcp_client
@@ -342,11 +350,56 @@ async fn extract_product_information(
         "Product extraction completed in {}ms for URL: {}",
         extraction_time, request.url
     );
+    info!("Extracted product info: {:?}", product_info);
 
     Ok(Json(ProductExtractionResponse {
         success: true,
         product: Some(product_info),
         error: None,
         extraction_time_ms: extraction_time,
+    }))
+}
+
+// Debug endpoint to inspect raw page content
+async fn debug_page_content(
+    State(state): State<AppState>,
+    Json(request): Json<types::DebugPageRequest>,
+) -> Result<Json<types::DebugPageResponse>, AppError> {
+    info!("Debug page content request for URL: {}", request.url);
+
+    // Create temporary session for content retrieval
+    let mut session = browser::BrowserSession::new()
+        .await
+        .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+    session
+        .navigate(&request.url)
+        .await
+        .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+    // Wait for page to load
+    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
+    let page_content = session
+        .interact(&BrowserAction::GetPageSource)
+        .await
+        .map_err(|e| AppError::BrowserError(e.to_string()))?;
+
+    // Try to get page title via JavaScript
+    let page_title = session
+        .interact(&BrowserAction::ExecuteScript {
+            script: "return document.title".to_string(),
+        })
+        .await
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    info!("Retrieved page content: {} characters", page_content.len());
+
+    Ok(Json(types::DebugPageResponse {
+        success: true,
+        url: request.url,
+        content_length: page_content.len(),
+        content: page_content,
+        title: page_title,
     }))
 }

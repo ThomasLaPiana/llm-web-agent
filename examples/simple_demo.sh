@@ -12,6 +12,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
 
 echo -e "${BLUE}🚀 LLM Web Agent - Simple Product Extraction Demo${NC}\n"
@@ -37,46 +38,6 @@ else
     exit 1
 fi
 
-echo -e "\n${YELLOW}📦 Testing product extraction...${NC}"
-
-# Simple test with httpbin (always available)
-echo -e "${BLUE}Testing with basic URL...${NC}"
-response=$(curl -s -X POST "$SERVER_URL/product/information" \
-    -H "Content-Type: application/json" \
-    -d '{"url": "https://httpbin.org/html"}')
-
-success=$(echo "$response" | jq -r '.success // false')
-if [[ "$success" == "true" ]]; then
-    echo -e "${GREEN}✅ Product extraction endpoint is working!${NC}"
-    extraction_time=$(echo "$response" | jq -r '.extraction_time_ms // 0')
-    echo -e "   Extraction completed in ${extraction_time}ms"
-    
-    # Show extracted product information
-    echo -e "\n${YELLOW}📦 Extracted Product Information:${NC}"
-    
-    # Extract and display each field
-    name=$(echo "$response" | jq -r '.product.name // "Not found"')
-    description=$(echo "$response" | jq -r '.product.description // "Not found"')
-    price=$(echo "$response" | jq -r '.product.price // "Not found"')
-    availability=$(echo "$response" | jq -r '.product.availability // "Not found"')
-    brand=$(echo "$response" | jq -r '.product.brand // "Not found"')
-    rating=$(echo "$response" | jq -r '.product.rating // "Not found"')
-    image_url=$(echo "$response" | jq -r '.product.image_url // "Not found"')
-    
-    echo -e "   ${BLUE}Name:${NC} $name"
-    echo -e "   ${BLUE}Description:${NC} $description"
-    echo -e "   ${BLUE}Price:${NC} $price"
-    echo -e "   ${BLUE}Availability:${NC} $availability"
-    echo -e "   ${BLUE}Brand:${NC} $brand"
-    echo -e "   ${BLUE}Rating:${NC} $rating"
-    if [[ "$image_url" != "Not found" && "$image_url" != "null" ]]; then
-        echo -e "   ${BLUE}Image URL:${NC} $image_url"
-    fi
-else
-    echo -e "${RED}❌ Product extraction failed${NC}"
-    echo "$response" | jq '.'
-fi
-
 # Real product extraction test
 echo -e "\n${YELLOW}🛍️  Testing real product extraction...${NC}"
 echo -e "${BLUE}Extracting from Amazon Star Wars Echo Dot...${NC}"
@@ -92,7 +53,7 @@ if [[ "$real_success" == "true" ]]; then
     echo -e "   Extraction completed in ${real_extraction_time}ms"
     
     # Show extracted real product information
-    echo -e "\n${YELLOW}🎯 Real Product Information:${NC}"
+    echo -e "\n${YELLOW}🎯 Parsed Product Information:${NC}"
     
     real_name=$(echo "$real_response" | jq -r '.product.name // "Not found"')
     real_description=$(echo "$real_response" | jq -r '.product.description // "Not found"')
@@ -107,6 +68,23 @@ if [[ "$real_success" == "true" ]]; then
     echo -e "   ${BLUE}Availability:${NC} $real_availability"
     echo -e "   ${BLUE}Brand:${NC} $real_brand"
     echo -e "   ${BLUE}Rating:${NC} $real_rating"
+    
+    # Show raw LLM response
+    echo -e "\n${PURPLE}🤖 Raw LLM Response:${NC}"
+    raw_llm_response=$(echo "$real_response" | jq -r '.product.raw_llm_response // "No raw response available"')
+    if [[ "$raw_llm_response" != "No raw response available" && "$raw_llm_response" != "null" ]]; then
+        echo -e "${PURPLE}   $raw_llm_response${NC}"
+    else
+        echo -e "${YELLOW}   ⚠️  Raw LLM response not available (field: $raw_llm_response)${NC}"
+        
+        # As fallback, show raw_data field which contains LLM response
+        raw_data=$(echo "$real_response" | jq -r '.product.raw_data // "No raw data available"')
+        if [[ "$raw_data" != "No raw data available" && "$raw_data" != "null" ]]; then
+            echo -e "\n${PURPLE}🔍 Raw Data (LLM Response):${NC}"
+            echo -e "${PURPLE}   $raw_data${NC}"
+        fi
+    fi
+    
 else
     echo -e "${YELLOW}⚠️  Real product extraction had issues (this is normal if LLM is not available)${NC}"
     echo -e "   Error: $(echo "$real_response" | jq -r '.error // "Unknown error"')"
