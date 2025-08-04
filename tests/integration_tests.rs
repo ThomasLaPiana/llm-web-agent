@@ -1,29 +1,34 @@
+// Integration tests with improved organization and helper functions
+//
+// This file contains comprehensive integration tests for the LLM Web Agent.
+// Tests are organized by functionality with consistent error handling and reduced code duplication.
+
 mod common;
-use common::{check_server_health, create_session, SERVER_URL};
-use reqwest::StatusCode;
+
+use common::{
+    assert_error_response, assert_success_response, check_server_health, cleanup_sessions,
+    get_request, post_json, TestSession, LONG_WAIT_MS, MEDIUM_WAIT_MS, SHORT_WAIT_MS,
+    TEST_AMAZON_URL, TEST_HTTPBIN_GET, TEST_HTTPBIN_HTML,
+};
+use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::time::sleep;
 
-// ===== BROWSER TESTS =====
+// ===== BROWSER FUNCTIONALITY TESTS =====
 
+/// Test server health endpoint
 #[tokio::test]
 async fn test_health_endpoint() {
-    // Verify server is running (external Docker server)
     check_server_health()
         .await
         .expect("Server should be running");
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&format!("{}/health", SERVER_URL))
-        .send()
+    let client = Client::new();
+    let body = get_request(&client, "/health")
         .await
         .expect("Health request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
     assert_eq!(body["status"], "healthy");
     assert!(body["active_sessions"].is_number());
     assert!(body["timestamp"].is_string());
@@ -34,210 +39,110 @@ async fn test_health_endpoint() {
     );
 }
 
+/// Test navigation API error handling with invalid session
 #[tokio::test]
-async fn test_navigation_api_contract() {
-    let client = reqwest::Client::new();
+async fn test_navigation_invalid_session() {
+    let client = Client::new();
+    
+    let payload = json!({
+        "session_id": "invalid-session-id",
+        "url": TEST_HTTPBIN_GET
+    });
 
-    // Test with invalid session ID
     let response = client
-        .post(&format!("{}/browser/navigate", SERVER_URL))
-        .json(&json!({
-            "session_id": "invalid-session-id",
-            "url": "https://httpbin.org/get"
-        }))
+        .post(&format!("{}/browser/navigate", common::SERVER_URL))
+        .json(&payload)
         .send()
         .await
         .expect("Request should complete");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    
     let body: Value = response.json().await.expect("Response should be JSON");
+    assert_error_response(&body, 404);
     assert!(body["error"].as_str().unwrap().contains("Session"));
-    assert_eq!(body["status"], 404);
 
     println!("✅ Navigation API error handling test passed");
 }
 
+/// Test browser session creation
 #[tokio::test]
-async fn test_browser_session_creation_api_only() {
-    // Just test the API response without actually using the browser
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&format!("{}/browser/session", SERVER_URL))
-        .send()
+async fn test_browser_session_creation() {
+    let session = TestSession::new()
         .await
         .expect("Session creation should succeed");
 
-    if response.status() != StatusCode::OK {
-        let status = response.status();
-        let error_body: Value = response.json().await.unwrap_or_default();
-        panic!(
-            "Session creation failed with status {}: {:?}",
-            status, error_body
-        );
-    }
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert!(body["session_id"].is_string());
-    let session_id = body["session_id"].as_str().unwrap();
-    assert!(!session_id.is_empty());
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
-
-    println!("✅ Browser session API test passed");
+    assert!(!session.id.is_empty());
+    println!("✅ Browser session creation test passed - ID: {}", session.id);
 }
 
+/// Test wait action functionality
 #[tokio::test]
 async fn test_wait_action() {
-    let session_id = create_session()
+    let session = TestSession::new()
         .await
         .expect("Browser session creation must succeed for this test");
 
-    let client = reqwest::Client::new();
     let start = std::time::Instant::now();
 
-    let response = client
-        .post(&format!("{}/browser/interact", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "action": {
-                "type": "Wait",
-                "params": {
-                    "duration_ms": 1000
-                }
-            }
-        }))
-        .send()
+    let action = json!({
+        "type": "Wait",
+        "params": {
+            "duration_ms": SHORT_WAIT_MS
+        }
+    });
+
+    let body = session
+        .interact(action)
         .await
         .expect("Wait request should succeed");
 
     let elapsed = start.elapsed();
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true);
+    assert_success_response(&body, "Wait action");
     assert_eq!(body["result"], "Wait completed");
 
     // Verify it actually waited (with some tolerance)
     assert!(
-        elapsed.as_millis() >= 950,
+        elapsed.as_millis() >= (SHORT_WAIT_MS - 50) as u128,
         "Should wait for at least the specified duration"
     );
+    
     println!(
         "✅ Wait action test passed (actual wait: {}ms)",
         elapsed.as_millis()
     );
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
 }
 
-#[tokio::test]
-async fn test_automation_task_fallback() {
-    let session_id = create_session()
-        .await
-        .expect("Browser session creation must succeed for this test");
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&format!("{}/automation/task", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "task_description": "Take a screenshot of the page",
-            "target_url": "https://httpbin.org/get"
-        }))
-        .send()
-        .await
-        .expect("Automation task request should succeed");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true);
-    assert!(body["task_id"].is_string(), "Should have a task ID");
-    assert!(body["results"].is_array(), "Should have results array");
-
-    let results = body["results"].as_array().expect("Results should be array");
-    assert!(!results.is_empty(), "Should have at least one result");
-    println!(
-        "✅ Automation task fallback test passed ({} steps)",
-        results.len()
-    );
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
-}
-
-// Tests that require actual browser navigation
+/// Test real browser navigation functionality
 #[tokio::test]
 async fn test_real_browser_navigation() {
-    let session_id = create_session()
+    let session = TestSession::new()
         .await
         .expect("Browser session creation must succeed for this test");
 
-    // Use a reliable test endpoint
-    let test_url = "https://httpbin.org/get";
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&format!("{}/browser/navigate", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "url": test_url
-        }))
-        .send()
+    let body = session
+        .navigate(TEST_HTTPBIN_GET)
         .await
         .expect("Navigation request should succeed");
 
-    if response.status() != StatusCode::OK {
-        let status = response.status();
-        let error_body: Value = response.json().await.unwrap_or_default();
-        panic!("Navigation failed with status {}: {:?}", status, error_body);
-    }
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true, "Navigation must be successful");
-    assert_eq!(body["current_url"], test_url, "URL must match");
+    assert_success_response(&body, "Navigation");
+    assert_eq!(body["current_url"], TEST_HTTPBIN_GET);
 
     // Wait for page to load
-    sleep(Duration::from_millis(2000)).await;
+    sleep(Duration::from_millis(MEDIUM_WAIT_MS)).await;
 
     // Verify we can get page source and it contains expected content
-    let source_response = client
-        .post(&format!("{}/browser/interact", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "action": {
-                "type": "GetPageSource"
-            }
-        }))
-        .send()
+    let source_action = json!({
+        "type": "GetPageSource"
+    });
+
+    let source_body = session
+        .interact(source_action)
         .await
         .expect("Page source request should succeed");
 
-    assert_eq!(
-        source_response.status(),
-        StatusCode::OK,
-        "Page source request must succeed"
-    );
-    let source_body: Value = source_response
-        .json()
-        .await
-        .expect("Response should be JSON");
-    assert_eq!(
-        source_body["success"], true,
-        "Page source extraction must succeed"
-    );
+    assert_success_response(&source_body, "Page source extraction");
 
     let page_source = source_body["result"]
         .as_str()
@@ -251,62 +156,37 @@ async fn test_real_browser_navigation() {
     );
 
     println!("✅ Real browser navigation test passed");
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
 }
 
+/// Test browser screenshot functionality
 #[tokio::test]
 async fn test_browser_screenshot() {
-    let session_id = create_session()
+    let session = TestSession::new()
         .await
         .expect("Browser session creation must succeed for this test");
 
     // Navigate to a simple page first
-    let client = reqwest::Client::new();
-    let nav_response = client
-        .post(&format!("{}/browser/navigate", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "url": "https://httpbin.org/html"
-        }))
-        .send()
+    let nav_body = session
+        .navigate(TEST_HTTPBIN_HTML)
         .await
         .expect("Navigation should succeed");
 
-    assert_eq!(
-        nav_response.status(),
-        StatusCode::OK,
-        "Navigation must succeed"
-    );
+    assert_success_response(&nav_body, "Navigation to HTML page");
 
     // Wait for page to load
-    sleep(Duration::from_millis(3000)).await;
+    sleep(Duration::from_millis(LONG_WAIT_MS)).await;
 
     // Take screenshot
-    let response = client
-        .post(&format!("{}/browser/interact", SERVER_URL))
-        .json(&json!({
-            "session_id": session_id,
-            "action": {
-                "type": "Screenshot"
-            }
-        }))
-        .send()
+    let screenshot_action = json!({
+        "type": "Screenshot"
+    });
+
+    let body = session
+        .interact(screenshot_action)
         .await
         .expect("Screenshot request should succeed");
 
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "Screenshot request must succeed"
-    );
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true, "Screenshot must be successful");
+    assert_success_response(&body, "Screenshot");
 
     let result = body["result"].as_str().expect("Result should be a string");
     assert!(
@@ -322,143 +202,117 @@ async fn test_browser_screenshot() {
         "✅ Browser screenshot test passed ({}KB)",
         result.len() / 1024
     );
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
 }
 
+/// Test automation task fallback functionality
 #[tokio::test]
-async fn test_invalid_session_error() {
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&format!("{}/browser/navigate", SERVER_URL))
-        .json(&json!({
-            "session_id": "invalid-session-id",
-            "url": "https://httpbin.org/get"
-        }))
-        .send()
+async fn test_automation_task_fallback() {
+    let session = TestSession::new()
         .await
-        .expect("Request should complete");
+        .expect("Browser session creation must succeed for this test");
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert!(body["error"].as_str().unwrap().contains("Session"));
-    assert_eq!(body["status"], 404);
+    let client = Client::new();
+    let payload = json!({
+        "session_id": session.id,
+        "task_description": "Take a screenshot of the page",
+        "target_url": TEST_HTTPBIN_GET
+    });
 
-    println!("✅ Invalid session error handling test passed");
+    let body = post_json(&client, "/automation/task", payload)
+        .await
+        .expect("Automation task request should succeed");
+
+    assert_success_response(&body, "Automation task");
+    assert!(body["task_id"].is_string(), "Should have a task ID");
+    assert!(body["results"].is_array(), "Should have results array");
+
+    let results = body["results"].as_array().expect("Results should be array");
+    assert!(!results.is_empty(), "Should have at least one result");
+    
+    println!(
+        "✅ Automation task fallback test passed ({} steps)",
+        results.len()
+    );
 }
 
 // ===== PRODUCT EXTRACTION TESTS =====
 
+/// Test product extraction without an existing session (creates temporary session)
 #[tokio::test]
 async fn test_product_extraction_without_session() {
-    let client = reqwest::Client::new();
+    let client = Client::new();
 
-    // Test without session ID (should create temporary session)
-    let response = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({
-            "url": "https://httpbin.org/html"
-        }))
-        .send()
+    let payload = json!({
+        "url": TEST_HTTPBIN_HTML
+    });
+
+    let body = post_json(&client, "/product/information", payload)
         .await
         .expect("Product extraction request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true, "Product extraction should succeed");
+    assert_success_response(&body, "Product extraction");
     assert!(
         body["extraction_time_ms"].is_number(),
         "Should have extraction time"
     );
     assert!(body["product"].is_object(), "Should have product object");
 
-    let product = &body["product"];
-    // For httpbin, we won't get real product info, but the structure should be there
-    assert!(product["name"].is_string() || product["name"].is_null());
-    assert!(product["description"].is_string() || product["description"].is_null());
-    assert!(product["price"].is_string() || product["price"].is_null());
+    validate_product_structure(&body["product"]);
 
     println!(
         "✅ Product extraction test (no session) passed in {}ms",
         body["extraction_time_ms"].as_u64().unwrap_or(0)
     );
 
-    // Clean up any browser sessions created during this test
-    let _ = client
-        .post(&format!("{}/browser/sessions/cleanup", SERVER_URL))
-        .send()
-        .await;
+    cleanup_sessions().await;
 }
 
+/// Test product extraction with an existing session
 #[tokio::test]
 async fn test_product_extraction_with_existing_session() {
-    let session_id = create_session()
+    let session = TestSession::new()
         .await
         .expect("Browser session creation must succeed for this test");
 
-    let client = reqwest::Client::new();
+    let client = Client::new();
+    let payload = json!({
+        "url": TEST_HTTPBIN_HTML,
+        "session_id": session.id
+    });
 
-    // Test with existing session
-    let response = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({
-            "url": "https://httpbin.org/html",
-            "session_id": session_id
-        }))
-        .send()
+    let body = post_json(&client, "/product/information", payload)
         .await
         .expect("Product extraction request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(body["success"], true, "Product extraction should succeed");
+    assert_success_response(&body, "Product extraction");
     assert!(
         body["extraction_time_ms"].is_number(),
         "Should have extraction time"
     );
     assert!(body["product"].is_object(), "Should have product object");
 
+    validate_product_structure(&body["product"]);
+
     println!(
         "✅ Product extraction test (with session) passed in {}ms",
         body["extraction_time_ms"].as_u64().unwrap_or(0)
     );
-
-    // Clean up this specific session
-    let _ = client
-        .delete(&format!("{}/browser/session/{}", SERVER_URL, session_id))
-        .send()
-        .await;
 }
 
+/// Test product extraction with real Amazon URL
 #[tokio::test]
 async fn test_product_extraction_amazon_url() {
-    let client = reqwest::Client::new();
+    let client = Client::new();
 
-    // Test with the real Amazon URL provided by the user
-    let amazon_url = "https://www.amazon.com/Star-Wars-Echo-Dot-bundle/dp/B0DZQ92XQZ/?_encoding=UTF8&pd_rd_w=J2REa&content-id=amzn1.sym.facdd3a9-7c82-4bfb-a2c8-ce73833c9be4&pf_rd_p=facdd3a9-7c82-4bfb-a2c8-ce73833c9be4&pf_rd_r=NGBMAN14SM5N4SCFJXGT&pd_rd_wg=5je2T&pd_rd_r=4ed5974f-7ae0-4192-9993-eaf90ae98cce&ref_=pd_hp_d_atf_dealz_sv&th=1";
+    let payload = json!({
+        "url": TEST_AMAZON_URL
+    });
 
-    let response = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({
-            "url": amazon_url
-        }))
-        .send()
+    let body = post_json(&client, "/product/information", payload)
         .await
         .expect("Amazon product extraction request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert_eq!(
-        body["success"], true,
-        "Amazon product extraction should succeed"
-    );
+    assert_success_response(&body, "Amazon product extraction");
     assert!(
         body["extraction_time_ms"].is_number(),
         "Should have extraction time"
@@ -468,7 +322,110 @@ async fn test_product_extraction_amazon_url() {
     let product = &body["product"];
 
     // Print the extracted product information for verification
+    print_product_info(product);
+
+    // Verify that we got at least some product information
+    // Note: This test might not extract perfect data depending on LLM availability,
+    // but we should at least get the structure and some attempt at extraction
+    assert!(
+        product["name"].is_string()
+            || product["description"].is_string()
+            || product["price"].is_string(),
+        "Should extract at least one piece of product information from Amazon page"
+    );
+
+    println!(
+        "✅ Amazon product extraction test passed in {}ms",
+        body["extraction_time_ms"].as_u64().unwrap_or(0)
+    );
+
+    cleanup_sessions().await;
+}
+
+/// Test product extraction error handling with invalid session
+#[tokio::test]
+async fn test_product_extraction_invalid_session() {
+    let client = Client::new();
+
+    let payload = json!({
+        "url": TEST_HTTPBIN_HTML,
+        "session_id": "invalid-session-id"
+    });
+
+    let response = client
+        .post(&format!("{}/product/information", common::SERVER_URL))
+        .json(&payload)
+        .send()
+        .await
+        .expect("Product extraction request should complete");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    
+    let body: Value = response.json().await.expect("Response should be JSON");
+    assert_error_response(&body, 404);
+    assert!(body["error"].as_str().unwrap().contains("Session"));
+
+    println!("✅ Product extraction invalid session error handling test passed");
+
+    cleanup_sessions().await;
+}
+
+/// Test product extraction error handling with malformed requests
+#[tokio::test]
+async fn test_product_extraction_malformed_request() {
+    let client = Client::new();
+
+    // Test with missing URL
+    let payload_no_url = json!({
+        "session_id": "some-session"
+    });
+
+    let response = client
+        .post(&format!("{}/product/information", common::SERVER_URL))
+        .json(&payload_no_url)
+        .send()
+        .await
+        .expect("Product extraction request should complete");
+
+    assert!(
+        response.status().is_client_error(),
+        "Should get client error for malformed request"
+    );
+
+    // Test with empty request
+    let empty_payload = json!({});
+
+    let response2 = client
+        .post(&format!("{}/product/information", common::SERVER_URL))
+        .json(&empty_payload)
+        .send()
+        .await
+        .expect("Product extraction request should complete");
+
+    assert!(
+        response2.status().is_client_error(),
+        "Should get client error for empty request"
+    );
+
+    println!("✅ Product extraction malformed request error handling test passed");
+
+    cleanup_sessions().await;
+}
+
+// ===== HELPER FUNCTIONS =====
+
+/// Validate the basic structure of a product object
+fn validate_product_structure(product: &Value) {
+    // For httpbin, we won't get real product info, but the structure should be there
+    assert!(product["name"].is_string() || product["name"].is_null());
+    assert!(product["description"].is_string() || product["description"].is_null());
+    assert!(product["price"].is_string() || product["price"].is_null());
+}
+
+/// Print product information for debugging/verification
+fn print_product_info(product: &Value) {
     println!("📦 Extracted Product Information:");
+    
     if let Some(name) = product["name"].as_str() {
         println!("   Name: {}", name);
     }
@@ -490,96 +447,4 @@ async fn test_product_extraction_amazon_url() {
     if let Some(image_url) = product["image_url"].as_str() {
         println!("   Image URL: {}", image_url);
     }
-
-    // Verify that we got at least some product information
-    // Note: This test might not extract perfect data depending on LLM availability,
-    // but we should at least get the structure and some attempt at extraction
-    assert!(
-        product["name"].is_string()
-            || product["description"].is_string()
-            || product["price"].is_string(),
-        "Should extract at least one piece of product information from Amazon page"
-    );
-
-    println!(
-        "✅ Amazon product extraction test passed in {}ms",
-        body["extraction_time_ms"].as_u64().unwrap_or(0)
-    );
-
-    // Clean up any temporary sessions (this test doesn't use a specific session)
-    let _ = client
-        .post(&format!("{}/browser/sessions/cleanup", SERVER_URL))
-        .send()
-        .await;
-}
-
-#[tokio::test]
-async fn test_product_extraction_invalid_session() {
-    let client = reqwest::Client::new();
-
-    // Test with invalid session ID
-    let response = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({
-            "url": "https://httpbin.org/html",
-            "session_id": "invalid-session-id"
-        }))
-        .send()
-        .await
-        .expect("Product extraction request should complete");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body: Value = response.json().await.expect("Response should be JSON");
-    assert!(body["error"].as_str().unwrap().contains("Session"));
-    assert_eq!(body["status"], 404);
-
-    println!("✅ Product extraction invalid session error handling test passed");
-
-    // Clean up browser sessions (just in case)
-    let _ = client
-        .post(&format!("{}/browser/sessions/cleanup", SERVER_URL))
-        .send()
-        .await;
-}
-
-#[tokio::test]
-async fn test_product_extraction_malformed_request() {
-    let client = reqwest::Client::new();
-
-    // Test with missing URL
-    let response = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({
-            "session_id": "some-session"
-        }))
-        .send()
-        .await
-        .expect("Product extraction request should complete");
-
-    // Should get a 400 Bad Request for malformed JSON
-    assert!(
-        response.status().is_client_error(),
-        "Should get client error for malformed request"
-    );
-
-    // Test with empty request
-    let response2 = client
-        .post(&format!("{}/product/information", SERVER_URL))
-        .json(&json!({}))
-        .send()
-        .await
-        .expect("Product extraction request should complete");
-
-    assert!(
-        response2.status().is_client_error(),
-        "Should get client error for empty request"
-    );
-
-    println!("✅ Product extraction malformed request error handling test passed");
-
-    // Clean up browser sessions (just in case)
-    let _ = client
-        .post(&format!("{}/browser/sessions/cleanup", SERVER_URL))
-        .send()
-        .await;
 }
